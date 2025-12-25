@@ -74,8 +74,8 @@ class _RequestHistoryScreenState extends State<RequestHistoryScreen> {
                         style: TextStyle(
                           color:
                               request.status == 'completed'
-                                  ? Colors.green
-                                  : Colors.orange,
+                                  ? Color(0xFF8B4513) // Brown theme color
+                                  : Color(0xFFD2691E), // Brown-orange theme color
                           fontWeight: FontWeight.bold,
                         ),
                       ),

@@ -4,6 +4,7 @@ class RequestModel {
   final String requesterName;
   final String title;
   final String description;
+  final String requestType;
   final String foodType;
   final int quantity;
   final String quantityUnit;
@@ -19,6 +20,8 @@ class RequestModel {
   final bool isUrgent;
   final String? fulfilledBy;
   final DateTime? fulfilledAt;
+  final bool needsVolunteer;
+  final String? deliveryOption; // 'Self', 'Volunteer Delivery', 'Other'
   final String? reason;
 
   RequestModel({
@@ -27,6 +30,7 @@ class RequestModel {
     required this.requesterName,
     required this.title,
     required this.description,
+    required this.requestType,
     required this.foodType,
     required this.quantity,
     required this.quantityUnit,
@@ -42,37 +46,42 @@ class RequestModel {
     this.isUrgent = false,
     this.fulfilledBy,
     this.fulfilledAt,
+    this.needsVolunteer = false,
+    this.deliveryOption,
     this.reason,
   });
 
   factory RequestModel.fromJson(Map<String, dynamic> json) {
-    return RequestModel(
-      id: json['id'] ?? json['_id'] ?? '',
-      requesterId: json['requesterId'],
-      requesterName: json['requesterName'],
-      title: json['title'],
-      description: json['description'],
-      foodType: json['foodType'],
-      quantity: json['quantity'],
-      quantityUnit: json['quantityUnit'],
-      neededBy: DateTime.parse(json['neededBy']),
-      pickupAddress: json['pickupAddress'],
-      latitude: json['latitude'].toDouble(),
-      longitude: json['longitude'].toDouble(),
-      status: json['status'],
-      createdAt: DateTime.parse(json['createdAt']),
-      updatedAt:
-          json['updatedAt'] != null ? DateTime.parse(json['updatedAt']) : null,
-      images: List<String>.from(json['images'] ?? []),
-      notes: json['notes'],
-      isUrgent: json['isUrgent'] ?? false,
-      fulfilledBy: json['fulfilledBy'],
-      fulfilledAt:
-          json['fulfilledAt'] != null
-              ? DateTime.parse(json['fulfilledAt'])
-              : null,
-      reason: json['reason'],
-    );
+    try {
+      return RequestModel(
+        id: json['id']?.toString() ?? json['_id']?.toString() ?? '',
+        requesterId: _extractId(json['requesterId']) ?? _extractId(json['userId']) ?? '',
+        requesterName: _extractName(json['requesterId']) ?? _extractName(json['userId']) ?? json['requesterName']?.toString() ?? json['userName']?.toString() ?? 'Anonymous',
+        title: json['title']?.toString() ?? '',
+        description: json['description']?.toString() ?? '',
+        requestType: json['requestType']?.toString() ?? '',
+        foodType: json['foodType']?.toString() ?? '',
+        quantity: int.tryParse(json['quantity']?.toString() ?? '1') ?? 1,
+        quantityUnit: json['quantityUnit']?.toString() ?? 'pieces',
+        neededBy: DateTime.tryParse(json['neededBy']?.toString() ?? '') ?? DateTime.now().add(Duration(days: 7)),
+        pickupAddress: json['pickupAddress']?.toString() ?? '',
+        latitude: double.tryParse(json['latitude']?.toString() ?? '0.0') ?? 0.0,
+        longitude: double.tryParse(json['longitude']?.toString() ?? '0.0') ?? 0.0,
+        status: json['status']?.toString() ?? 'pending',
+        createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? '') ?? DateTime.now(),
+        updatedAt: json['updatedAt'] != null ? DateTime.tryParse(json['updatedAt'].toString()) : null,
+        images: (json['images'] as List?)?.map((e) => e.toString()).toList() ?? [],
+        notes: json['notes']?.toString(),
+        isUrgent: json['isUrgent'] == true || json['isUrgent']?.toString().toLowerCase() == 'true',
+        fulfilledBy: json['fulfilledBy']?.toString(),
+        fulfilledAt: json['fulfilledAt'] != null ? DateTime.parse(json['fulfilledAt']) : null,
+        needsVolunteer: json['needsVolunteer'] ?? json['deliveryOption'] == 'Volunteer Delivery',
+        deliveryOption: json['deliveryOption'],
+        reason: json['reason']?.toString(),
+      );
+    } catch (e) {
+      throw Exception('Failed to parse RequestModel: $e');
+    }
   }
 
   Map<String, dynamic> toJson() {
@@ -82,6 +91,7 @@ class RequestModel {
       'requesterName': requesterName,
       'title': title,
       'description': description,
+      'requestType': requestType,
       'foodType': foodType,
       'quantity': quantity,
       'quantityUnit': quantityUnit,
@@ -97,6 +107,7 @@ class RequestModel {
       'isUrgent': isUrgent,
       'fulfilledBy': fulfilledBy,
       'fulfilledAt': fulfilledAt?.toIso8601String(),
+      'needsVolunteer': needsVolunteer,
       'reason': reason,
     };
   }
@@ -107,6 +118,7 @@ class RequestModel {
     String? requesterName,
     String? title,
     String? description,
+    String? requestType,
     String? foodType,
     int? quantity,
     String? quantityUnit,
@@ -122,6 +134,8 @@ class RequestModel {
     bool? isUrgent,
     String? fulfilledBy,
     DateTime? fulfilledAt,
+    String? deliveryOption,
+    bool? needsVolunteer,
     String? reason,
   }) {
     return RequestModel(
@@ -130,6 +144,7 @@ class RequestModel {
       requesterName: requesterName ?? this.requesterName,
       title: title ?? this.title,
       description: description ?? this.description,
+      requestType: requestType ?? this.requestType,
       foodType: foodType ?? this.foodType,
       quantity: quantity ?? this.quantity,
       quantityUnit: quantityUnit ?? this.quantityUnit,
@@ -145,7 +160,28 @@ class RequestModel {
       isUrgent: isUrgent ?? this.isUrgent,
       fulfilledBy: fulfilledBy ?? this.fulfilledBy,
       fulfilledAt: fulfilledAt ?? this.fulfilledAt,
+      deliveryOption: deliveryOption ?? this.deliveryOption,
+      needsVolunteer: needsVolunteer ?? this.needsVolunteer,
       reason: reason ?? this.reason,
     );
+  }
+
+  // Helper methods to extract ID and name from user objects
+  static String? _extractId(dynamic userField) {
+    if (userField == null) return null;
+    if (userField is String) return userField;
+    if (userField is Map<String, dynamic>) {
+      return userField['_id']?.toString() ?? userField['id']?.toString();
+    }
+    return null;
+  }
+
+  static String? _extractName(dynamic userField) {
+    if (userField == null) return null;
+    if (userField is String) return null; // If it's just an ID string, no name
+    if (userField is Map<String, dynamic>) {
+      return userField['name']?.toString();
+    }
+    return null;
   }
 }

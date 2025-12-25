@@ -22,11 +22,11 @@ class TermsOfServiceScreen extends StatelessWidget {
             SizedBox(height: 24),
             _section(
               'Acceptance of Terms',
-              'By accessing and using the Zero Food Waste app, you accept and agree to be bound by the terms and provision of this agreement.',
+              'By accessing and using the Care Connect app, you accept and agree to be bound by the terms and provision of this agreement.',
             ),
             _section(
               'Description of Service',
-              'Zero Food Waste is a platform that connects food donors with individuals in need, facilitating the sharing of surplus food to reduce waste and help those in need.',
+              'Care Connect is a platform that connects food donors with individuals in need, facilitating the sharing of surplus food to reduce waste and help those in need.',
             ),
             _section(
               'User Responsibilities',
@@ -46,11 +46,11 @@ class TermsOfServiceScreen extends StatelessWidget {
             ),
             _section(
               'Intellectual Property',
-              'The service and its original content, features, and functionality are owned by Zero Food Waste and are protected by international copyright, trademark, and other intellectual property laws.',
+              'The service and its original content, features, and functionality are owned by Care Connect and are protected by international copyright, trademark, and other intellectual property laws.',
             ),
             _section(
               'Limitation of Liability',
-              'Zero Food Waste is not liable for any damages arising from the use of our service, including but not limited to food safety issues, user disputes, or technical problems.',
+              'Care Connect is not liable for any damages arising from the use of our service, including but not limited to food safety issues, user disputes, or technical problems.',
             ),
             _section(
               'Termination',
@@ -62,7 +62,7 @@ class TermsOfServiceScreen extends StatelessWidget {
             ),
             _section(
               'Contact Information',
-              'If you have any questions about these Terms of Service, please contact us at legal@zerofoodwaste.com',
+              'If you have any questions about these Terms of Service, please contact us at legal@careconnect.com',
             ),
             SizedBox(height: 32),
             Center(

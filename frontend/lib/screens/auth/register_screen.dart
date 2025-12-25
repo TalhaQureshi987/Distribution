@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
+import '../../services/payment_service.dart';
+import '../../theme/app_theme.dart';
+import '../payment/payment_confirmation_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   @override
@@ -9,33 +12,149 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
-  final _numberController = TextEditingController(); // phone number
+  final _phoneController = TextEditingController();
+  final _addressController = TextEditingController();
   final _passwordController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = false;
+  String _selectedRole = 'donor';
+  bool _obscurePassword = true;
+  bool _isRoleProcessing = false;
+  bool _registrationInProgress = false;
+
+  final Map<String, Map<String, dynamic>> _roleInfo = {
+    'donor': {
+      'title': 'Donor',
+      'description': 'Donate food to help reduce waste',
+      'icon': '🍽️',
+      'price': 0,
+      'isFree': true,
+    },
+    'volunteer': {
+      'title': 'Volunteer',
+      'description': 'Help deliver food and support the community',
+      'icon': '🤝',
+      'price': 0,
+      'isFree': true,
+    },
+    'requester': {
+      'title': 'Requester',
+      'description': 'Request food assistance when needed',
+      'icon': '🙏',
+      'price': 500,
+      'isFree': false,
+    },
+    'delivery': {
+      'title': 'Delivery & Earn',
+      'description': 'Earn money by delivering food',
+      'icon': '🚚',
+      'price': 500,
+      'isFree': false,
+    },
+  };
 
   void _register() async {
     if (_formKey.currentState!.validate()) {
-      setState(() => _isLoading = true);
+      if (_registrationInProgress) {
+        print('⚠️ Registration already in progress - ignoring duplicate attempt');
+        return;
+      }
+      
+      setState(() {
+        _isLoading = true;
+        _registrationInProgress = true;
+      });
+      
       try {
-        await AuthService.register(
-          _nameController.text.trim(),
-          _emailController.text.trim(),
-          _passwordController.text,
-          _numberController.text.trim(),
+        print('🚀 Starting registration with data:');
+        print('Name: ${_nameController.text.trim()}');
+        print('Email: ${_emailController.text.trim()}');
+        print('Role: $_selectedRole');
+        print('Phone: ${_phoneController.text.trim()}');
+        print('Address: ${_addressController.text.trim()}');
+        
+        final response = await AuthService.register(
+          name: _nameController.text.trim(),
+          email: _emailController.text.trim(),
+          phone: _phoneController.text.trim(),
+          address: _addressController.text.trim(),
+          password: _passwordController.text,
+          role: _selectedRole,
         );
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Registration successful!")),
-        );
+        print('📥 Registration response received:');
+        print('Response keys: ${response.keys.toList()}');
+        print('RequiresPayment: ${response['requiresPayment']}');
+        print('Success: ${response['success']}');
+        print('User data: ${response['user']}');
 
-        Navigator.pushReplacementNamed(context, '/');
+        if (response['requiresPayment'] == true) {
+          print('💳 Paid role detected - navigating to payment');
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("Registration successful! Please complete payment to continue."),
+            backgroundColor: Colors.green,
+          ));
+          
+          print('🔄 Navigating to /stripe-payment with args:');
+          final args = {
+            'userId': response['userId'] ?? response['user']?['_id'] ?? response['user']?['id'],
+            'amount': 500,
+            'userEmail': _emailController.text.trim(),
+            'userName': _nameController.text.trim(),
+            'type': 'registration',
+            'requestData': null,
+          };
+          print('Payment args: $args');
+          
+          try {
+            await Navigator.pushReplacementNamed(context, '/stripe-payment', arguments: args);
+            print('✅ Successfully navigated to Stripe payment screen');
+          } catch (navError) {
+            print('❌ Navigation to payment failed: $navError');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Navigation error: $navError'), backgroundColor: Colors.red),
+            );
+          }
+        } else {
+          print('🆓 Free role detected - navigating to email verification');
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("Registration successful! Please verify your email to continue."),
+            backgroundColor: Colors.green,
+          ));
+
+          print('🔄 Navigating to /email-otp-verification with args:');
+          final args = {
+            'email': _emailController.text.trim(),
+            'userId': response['userId'] ?? response['user']?['_id'] ?? response['user']?['id'],
+            'userData': response['user'],
+          };
+          print('Email verification args: $args');
+          
+          try {
+            await Navigator.pushReplacementNamed(context, '/email-otp-verification', arguments: args);
+            print('✅ Successfully navigated to email OTP verification screen');
+          } catch (navError) {
+            print('❌ Navigation to email verification failed: $navError');
+            print('❌ Navigation error type: ${navError.runtimeType}');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Navigation error: $navError'), backgroundColor: Colors.red),
+            );
+          }
+        }
       } catch (e) {
+        print('❌ Registration error: $e');
+        print('❌ Error type: ${e.runtimeType}');
+        print('❌ Error stack trace: ${StackTrace.current}');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())),
+          SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
         );
       } finally {
-        setState(() => _isLoading = false);
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _registrationInProgress = false;
+          });
+        }
       }
     }
   }
@@ -55,108 +174,305 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFFF4F4F4), Color(0xFFE8F5E9)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-        ),
-        child: Center(
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.person_add_alt_1, size: 80, color: Colors.brown),
-                  SizedBox(height: 16),
-                  Text(
-                    "Create Account",
-                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.brown),
-                  ),
-                  SizedBox(height: 8),
-                  Text("Register to get started", style: TextStyle(fontSize: 16, color: Colors.black54)),
-                  SizedBox(height: 32),
-                  Form(
-                    key: _formKey,
-                    child: Column(
-                      children: [
-                        TextFormField(
-                          controller: _nameController,
-                          decoration: _decoration("Name", Icons.person),
-                          validator: (v) => v!.trim().isEmpty ? "Please enter your name" : null,
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: const Text('Create Account'),
+        backgroundColor: AppTheme.primaryColor,
+        foregroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Create Your Account',
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.primaryColor,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Choose your role and start making a difference',
+                style: TextStyle(fontSize: 16, color: Colors.grey),
+              ),
+              const SizedBox(height: 32),
+
+              const Text(
+                'Select Your Role',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.primaryColor,
+                ),
+              ),
+              const SizedBox(height: 16),
+              
+              ...(_roleInfo.entries.map((entry) {
+                final role = entry.key;
+                final info = entry.value;
+                final isSelected = _selectedRole == role;
+                final isFree = info['isFree'];
+                
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  child: InkWell(
+                    onTap: () {
+                      setState(() {
+                        _selectedRole = role;
+                        _isRoleProcessing = true;
+                      });
+                      
+                      Future.delayed(Duration(milliseconds: 500), () {
+                        if (mounted) {
+                          setState(() {
+                            _isRoleProcessing = false;
+                          });
+                        }
+                      });
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: isSelected ? AppTheme.primaryColor : Colors.grey.shade300,
+                          width: isSelected ? 2 : 1,
                         ),
-                        SizedBox(height: 16),
-                        TextFormField(
-                          controller: _emailController,
-                          decoration: _decoration("Email", Icons.email),
-                          keyboardType: TextInputType.emailAddress,
-                          validator: (v) {
-                            if (v == null || v.trim().isEmpty) return "Please enter your email";
-                            final emailOk = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(v.trim());
-                            return emailOk ? null : "Enter a valid email";
-                          },
-                        ),
-                        SizedBox(height: 16),
-                        TextFormField(
-                          controller: _numberController,
-                          decoration: _decoration("Number", Icons.phone),
-                          keyboardType: TextInputType.phone,
-                          validator: (v) {
-                            if (v == null || v.trim().isEmpty) return "Please enter your number";
-                            final digits = v.replaceAll(RegExp(r'\D'), '');
-                            if (digits.length < 7) return "Enter a valid number";
-                            return null;
-                          },
-                        ),
-                        SizedBox(height: 16),
-                        TextFormField(
-                          controller: _passwordController,
-                          decoration: _decoration("Password", Icons.lock),
-                          obscureText: true,
-                          validator: (v) => (v == null || v.isEmpty) ? "Please enter your password" : null,
-                        ),
-                        SizedBox(height: 28),
-                        SizedBox(
-                          width: double.infinity,
-                          height: 54,
-                          child: ElevatedButton(
-                            onPressed: _isLoading ? null : _register,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.brown,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        borderRadius: BorderRadius.circular(12),
+                        color: isSelected ? AppTheme.primaryColor.withOpacity(0.05) : Colors.white,
+                      ),
+                      child: Row(
+                        children: [
+                          _isRoleProcessing && isSelected 
+                            ? SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(AppTheme.primaryColor),
+                                ),
+                              )
+                            : Text(info['icon'], style: const TextStyle(fontSize: 24)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(
+                                      _isRoleProcessing && isSelected ? 'Processing...' : info['title'],
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color: isSelected ? AppTheme.primaryColor : Colors.black87,
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: isFree ? Colors.green : Colors.orange,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        isFree ? 'FREE' : 'PKR ${info['price']}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  info['description'],
+                                  style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+                                ),
+                              ],
                             ),
-                            child: _isLoading
-                                ? CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.white))
-                                : Text("Register", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                           ),
-                        ),
-                      ],
+                          Radio<String>(
+                            value: role,
+                            groupValue: _selectedRole,
+                            onChanged: (value) => setState(() => _selectedRole = value!),
+                            activeColor: AppTheme.primaryColor,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                  SizedBox(height: 24),
+                );
+              }).toList()),
+
+              const SizedBox(height: 24),
+
+              const Text(
+                'Personal Information',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.primaryColor,
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              TextFormField(
+                controller: _nameController,
+                decoration: InputDecoration(
+                  labelText: 'Full Name',
+                  prefixIcon: const Icon(Icons.person, color: AppTheme.primaryColor),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppTheme.primaryColor, width: 2),
+                  ),
+                ),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return "Please enter your name";
+                  if (v.trim().length < 2) return "Name must be at least 2 characters";
+                  if (!RegExp(r'^[a-zA-Z\s]+$').hasMatch(v.trim())) return "Name can only contain letters and spaces";
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+
+              TextFormField(
+                controller: _phoneController,
+                decoration: InputDecoration(
+                  labelText: 'Phone Number',
+                  prefixIcon: const Icon(Icons.phone, color: AppTheme.primaryColor),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppTheme.primaryColor, width: 2),
+                  ),
+                ),
+                keyboardType: TextInputType.phone,
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return "Please enter your phone number";
+                  if (v.trim().length < 10) return "Phone number must be at least 10 digits";
+                  if (!RegExp(r'^[0-9]+$').hasMatch(v.trim())) return "Phone number can only contain digits";
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+
+              TextFormField(
+                controller: _addressController,
+                decoration: InputDecoration(
+                  labelText: 'Address',
+                  prefixIcon: const Icon(Icons.location_on, color: AppTheme.primaryColor),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppTheme.primaryColor, width: 2),
+                  ),
+                ),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return "Please enter your address";
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+
+              TextFormField(
+                controller: _emailController,
+                decoration: InputDecoration(
+                  labelText: 'Email Address',
+                  prefixIcon: const Icon(Icons.email, color: AppTheme.primaryColor),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppTheme.primaryColor, width: 2),
+                  ),
+                ),
+                keyboardType: TextInputType.emailAddress,
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return "Please enter your email";
+                  final emailOk = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(v.trim());
+                  return emailOk ? null : "Enter a valid email";
+                },
+              ),
+              const SizedBox(height: 16),
+
+              TextFormField(
+                controller: _passwordController,
+                decoration: InputDecoration(
+                  labelText: 'Password',
+                  prefixIcon: const Icon(Icons.lock, color: AppTheme.primaryColor),
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscurePassword ? Icons.visibility : Icons.visibility_off,
+                      color: AppTheme.primaryColor,
+                    ),
+                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  ),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppTheme.primaryColor, width: 2),
+                  ),
+                ),
+                obscureText: _obscurePassword,
+                validator: (v) {
+                  if (v == null || v.isEmpty) return "Please enter your password";
+                  if (v.length < 8) return "Password must be at least 8 characters";
+                  if (!RegExp(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)').hasMatch(v)) {
+                    return "Password must contain uppercase, lowercase, and number";
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 32),
+
+              SizedBox(
+                width: double.infinity,
+                height: 56,
+                child: ElevatedButton(
+                  onPressed: _isLoading ? null : _register,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.primaryColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    elevation: 2,
+                  ),
+                  child: _isLoading
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : Text(
+                          _roleInfo[_selectedRole]!['isFree']
+                              ? 'Create Account (Free)'
+                              : 'Continue to Payment (PKR ${_roleInfo[_selectedRole]!['price']})',
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text('Already have an account? '),
                   TextButton(
                     onPressed: () => Navigator.pushReplacementNamed(context, '/login'),
-                    child: Text("Already have an account? Login", style: TextStyle(color: Colors.brown, fontWeight: FontWeight.w600)),
+                    child: const Text(
+                      'Sign In',
+                      style: TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ],
               ),
-            ),
+            ],
           ),
         ),
       ),
-    );
-  }
-
-  InputDecoration _decoration(String label, IconData icon) {
-    return InputDecoration(
-      labelText: label,
-      prefixIcon: Icon(icon, color: Colors.brown),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
-      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Colors.brown, width: 2)),
     );
   }
 }

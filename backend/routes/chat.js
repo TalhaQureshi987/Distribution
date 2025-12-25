@@ -13,6 +13,7 @@ const {
 } = require("../controllers/chatController");
 
 const { protect } = require("../middleware/authMiddleware");
+const validateObjectId = require("../middleware/validateObjectId");
 
 // Create or get chat room
 router.post("/rooms", protect, createOrGetChatRoom);
@@ -21,16 +22,22 @@ router.post("/rooms", protect, createOrGetChatRoom);
 router.get("/rooms", protect, getChatRooms);
 
 // Get room messages
-router.get("/rooms/:roomId/messages", protect, getRoomMessages);
+router.get("/rooms/:roomId/messages", protect, validateObjectId("roomId"), getRoomMessages);
 
 // Send message
-router.post("/rooms/:roomId/messages", protect, sendMessage);
+router.post("/rooms/:roomId/messages", protect, validateObjectId("roomId"), sendMessage);
 
 // Mark as read
-router.patch("/rooms/:roomId/read", protect, markMessagesAsRead);
+router.patch("/rooms/:roomId/read", protect, validateObjectId("roomId"), markMessagesAsRead);
 
 // Delete message
-router.delete("/rooms/:roomId/messages/:messageId", protect, deleteMessage);
+router.delete(
+  "/rooms/:roomId/messages/:messageId",
+  protect,
+  validateObjectId("roomId"),
+  validateObjectId("messageId"),
+  deleteMessage
+);
 
 // Unread count
 router.get("/unread-count", protect, getUnreadCount);

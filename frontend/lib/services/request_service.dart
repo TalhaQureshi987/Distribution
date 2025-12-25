@@ -1,294 +1,171 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
-import '../models/request_model.dart';
 import 'api_service.dart';
+import 'auth_service.dart';
 
 class RequestService {
-  static const String baseUrl = '/api/requests';
-
-  /// Create a new food request
-  static Future<RequestModel> createRequest({
-    required String title,
-    required String description,
-    required String foodType,
-    required int quantity,
-    required String quantityUnit,
-    required DateTime neededBy,
-    required String pickupAddress,
-    required double latitude,
-    required double longitude,
-    String? notes,
-    bool isUrgent = false,
-    List<String> images = const [],
-  }) async {
+  /// Get request dashboard statistics
+  static Future<Map<String, dynamic>> getRequestDashboardStats() async {
     try {
-      final token = await _getToken();
-      final response = await http.post(
-        Uri.parse('${ApiService.base}$baseUrl'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({
-          'title': title,
-          'description': description,
-          'foodType': foodType,
-          'quantity': quantity,
-          'quantityUnit': quantityUnit,
-          'neededBy': neededBy.toIso8601String(),
-          'pickupAddress': pickupAddress,
-          'latitude': latitude,
-          'longitude': longitude,
-          'notes': notes,
-          'isUrgent': isUrgent,
-          'images': images,
-        }),
+      final token = await AuthService.getValidToken();
+      final response = await ApiService.getJson(
+        '/api/requests/dashboard-stats',
+        token: token,
       );
-
-      if (response.statusCode == 201) {
-        final data = jsonDecode(response.body);
-        return RequestModel.fromJson(data['request']);
-      } else {
-        throw Exception('Failed to create request: ${response.body}');
-      }
+      return response['stats'] ?? {};
+    } on AuthException catch (e) {
+      print(
+        '⚠️ Authentication error in getRequestDashboardStats: ${e.message}',
+      );
+      // Don't throw - return empty stats to prevent dashboard crash
+      return {};
     } catch (e) {
-      throw Exception('Error creating request: $e');
+      print('❌ Error fetching request dashboard stats: $e');
+      // Return empty stats instead of throwing to prevent dashboard crash
+      return {};
     }
   }
 
-  /// Get all available requests
-  static Future<List<RequestModel>> getAvailableRequests({
+  /// Get user's requests
+  static Future<List<Map<String, dynamic>>> getUserRequests() async {
+    try {
+      final token = await AuthService.getValidToken();
+      final response = await ApiService.getJson(
+        '/api/requests/my-requests',
+        token: token,
+      );
+      return List<Map<String, dynamic>>.from(response['requests'] ?? []);
+    } catch (e) {
+      print('Error fetching user requests: $e');
+      return [];
+    }
+  }
+
+  /// Create a new request
+  static Future<Map<String, dynamic>> createRequest(
+    Map<String, dynamic> requestData,
+  ) async {
+    try {
+      final token = await AuthService.getValidToken();
+      final response = await ApiService.postJson(
+        '/api/requests',
+        body: requestData,
+        token: token,
+      );
+      return response;
+    } catch (e) {
+      print('Error creating request: $e');
+      rethrow;
+    }
+  }
+
+  /// Get request by ID
+  static Future<Map<String, dynamic>> getRequestById(String requestId) async {
+    try {
+      final token = await AuthService.getValidToken();
+      final response = await ApiService.getJson(
+        '/api/requests/$requestId',
+        token: token,
+      );
+      return response['request'] ?? {};
+    } catch (e) {
+      print('Error fetching request by ID: $e');
+      return {};
+    }
+  }
+
+  /// Get available requests (for volunteers/delivery personnel)
+  static Future<List<Map<String, dynamic>>> getAvailableRequests({
     String? foodType,
-    String? location,
     double? latitude,
     double? longitude,
     double? radius,
     bool? isUrgent,
     String? status,
+    int page = 1,
+    int limit = 20,
   }) async {
     try {
-      final token = await _getToken();
-      final queryParams = <String, String>{};
+      final token = await AuthService.getValidToken();
+
+      // Build query parameters
+      final queryParams = <String, String>{
+        'page': page.toString(),
+        'limit': limit.toString(),
+      };
 
       if (foodType != null) queryParams['foodType'] = foodType;
-      if (location != null) queryParams['location'] = location;
       if (latitude != null) queryParams['latitude'] = latitude.toString();
       if (longitude != null) queryParams['longitude'] = longitude.toString();
       if (radius != null) queryParams['radius'] = radius.toString();
       if (isUrgent != null) queryParams['isUrgent'] = isUrgent.toString();
       if (status != null) queryParams['status'] = status;
 
-      final uri = Uri.parse(
-        '${ApiService.base}$baseUrl',
-      ).replace(queryParameters: queryParams);
+      final queryString = queryParams.entries
+          .map((e) => '${e.key}=${Uri.encodeComponent(e.value)}')
+          .join('&');
 
-      final response = await http.get(
-        uri,
-        headers: {'Authorization': 'Bearer $token'},
+      final response = await ApiService.getJson(
+        '/api/requests?$queryString',
+        token: token,
       );
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return (data['requests'] as List)
-            .map((json) => RequestModel.fromJson(json))
-            .toList();
-      } else {
-        throw Exception('Failed to fetch requests: ${response.body}');
-      }
+      return List<Map<String, dynamic>>.from(response['requests'] ?? []);
     } catch (e) {
-      throw Exception('Error fetching requests: $e');
+      print('Error fetching available requests: $e');
+      return [];
     }
   }
 
-  /// Get request by ID
-  static Future<RequestModel> getRequestById(String requestId) async {
-    try {
-      final token = await _getToken();
-      final response = await http.get(
-        Uri.parse('${ApiService.base}$baseUrl/$requestId'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return RequestModel.fromJson(data['request']);
-      } else {
-        throw Exception('Failed to fetch request: ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Error fetching request: $e');
-    }
-  }
-
-  /// Get user's requests
-  static Future<List<RequestModel>> getUserRequests() async {
-    try {
-      final token = await _getToken();
-      final response = await http.get(
-        Uri.parse('${ApiService.base}$baseUrl/my-requests'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return (data['requests'] as List)
-            .map((json) => RequestModel.fromJson(json))
-            .toList();
-      } else {
-        throw Exception('Failed to fetch user requests: ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Error fetching user requests: $e');
-    }
-  }
-
-  /// Fulfill a request
-  static Future<RequestModel> fulfillRequest(String requestId) async {
-    try {
-      final token = await _getToken();
-      final response = await http.patch(
-        Uri.parse('${ApiService.base}$baseUrl/$requestId/fulfill'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return RequestModel.fromJson(data['request']);
-      } else {
-        throw Exception('Failed to fulfill request: ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Error fulfilling request: $e');
-    }
-  }
-
-  /// Update request status
-  static Future<RequestModel> updateRequestStatus(
-    String requestId,
-    String status, {
-    String? reason,
-  }) async {
-    try {
-      final token = await _getToken();
-      final body = {'status': status};
-      if (reason != null) body['reason'] = reason;
-
-      final response = await http.patch(
-        Uri.parse('${ApiService.base}$baseUrl/$requestId/status'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode(body),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return RequestModel.fromJson(data['request']);
-      } else {
-        throw Exception('Failed to update request status: ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Error updating request status: $e');
-    }
-  }
-
-  /// Cancel a request
-  static Future<RequestModel> cancelRequest(
-    String requestId,
-    String reason,
+  /// Get requests by delivery option
+  static Future<List<Map<String, dynamic>>> getRequestsByDeliveryOption(
+    String deliveryOption,
   ) async {
     try {
-      final token = await _getToken();
-      final response = await http.patch(
-        Uri.parse('${ApiService.base}$baseUrl/$requestId/cancel'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({'reason': reason}),
+      final token = await AuthService.getValidToken();
+      final response = await ApiService.getJson(
+        '/api/requests/delivery-option/$deliveryOption',
+        token: token,
       );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return RequestModel.fromJson(data['request']);
-      } else {
-        throw Exception('Failed to cancel request: ${response.body}');
-      }
+      return List<Map<String, dynamic>>.from(response['requests'] ?? []);
     } catch (e) {
-      throw Exception('Error canceling request: $e');
-    }
-  }
-
-  /// Delete request
-  static Future<void> deleteRequest(String requestId) async {
-    try {
-      final token = await _getToken();
-      final response = await http.delete(
-        Uri.parse('${ApiService.base}$baseUrl/$requestId'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
-      if (response.statusCode != 200) {
-        throw Exception('Failed to delete request: ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Error deleting request: $e');
-    }
-  }
-
-  /// Get requests by status
-  static Future<List<RequestModel>> getRequestsByStatus(String status) async {
-    try {
-      final token = await _getToken();
-      final response = await http.get(
-        Uri.parse('${ApiService.base}$baseUrl/status/$status'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return (data['requests'] as List)
-            .map((json) => RequestModel.fromJson(json))
-            .toList();
-      } else {
-        throw Exception('Failed to fetch requests by status: ${response.body}');
-      }
-    } catch (e) {
-      throw Exception('Error fetching requests by status: $e');
+      print('Error fetching requests by delivery option: $e');
+      return [];
     }
   }
 
   /// Get urgent requests
-  static Future<List<RequestModel>> getUrgentRequests() async {
+  static Future<List<Map<String, dynamic>>> getUrgentRequests() async {
     try {
-      final token = await _getToken();
-      final response = await http.get(
-        Uri.parse('${ApiService.base}$baseUrl/urgent'),
-        headers: {'Authorization': 'Bearer $token'},
+      final token = await AuthService.getValidToken();
+      final response = await ApiService.getJson(
+        '/api/requests/urgent',
+        token: token,
       );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return (data['requests'] as List)
-            .map((json) => RequestModel.fromJson(json))
-            .toList();
-      } else {
-        throw Exception('Failed to fetch urgent requests: ${response.body}');
-      }
+      return List<Map<String, dynamic>>.from(response['requests'] ?? []);
     } catch (e) {
-      throw Exception('Error fetching urgent requests: $e');
+      print('Error fetching urgent requests: $e');
+      return [];
     }
   }
 
-  /// Get token from SharedPreferences
-  static Future<String> _getToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('token');
-    if (token == null || token.isEmpty) {
-      throw Exception('No authentication token found');
-    }
-    return token;
+  /// Calculate service cost for a request
+  static int calculateServiceCost(int requestCount) {
+    const int SERVICE_COST_PER_REQUEST = 100;
+    return requestCount * SERVICE_COST_PER_REQUEST;
+  }
+
+  /// Get service cost breakdown
+  static Map<String, int> getServiceCostBreakdown({
+    required int totalRequests,
+    required int verifiedRequests,
+    required int pendingRequests,
+  }) {
+    const int SERVICE_COST_PER_REQUEST = 100;
+
+    return {
+      'totalServiceCost': totalRequests * SERVICE_COST_PER_REQUEST,
+      'paidServiceCost': verifiedRequests * SERVICE_COST_PER_REQUEST,
+      'pendingServiceCost': pendingRequests * SERVICE_COST_PER_REQUEST,
+      'serviceCostPerRequest': SERVICE_COST_PER_REQUEST,
+    };
   }
 }

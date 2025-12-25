@@ -1,93 +1,151 @@
+// lib/services/delivery_service.dart
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_service.dart';
+import 'auth_service.dart';
 
-class DonationService {
-  static const String baseUrl = '/api/donations';
+class DeliveryService {
+  // Adjust to match your backend routes
+  static const String baseUrl = '/api/deliveries';
   static const Duration _timeout = Duration(seconds: 30);
 
-  static Future<Map<String, dynamic>> createDonation({
-    required String title,
-    required String description,
-    required String foodType,
-    required int quantity,
-    required String quantityUnit,
-    required DateTime expiryDate,
+  /// Request/create a delivery job
+  static Future<Map<String, dynamic>> requestDelivery({
     required String pickupAddress,
-    required double latitude,
-    required double longitude,
+    required String deliveryAddress,
+    required double pickupLatitude,
+    required double pickupLongitude,
+    required double deliveryLatitude,
+    required double deliveryLongitude,
+    required String
+    deliveryType, // 'Self delivery' | 'Volunteer Delivery' | 'Paid Delivery (Earn)'
+    required String itemType, // e.g. 'Food Donation'
+    required String itemDescription,
+    String? donationId,
+    double? estimatedPrice,
     String? notes,
-    bool isUrgent = false,
-    File? imageFile,
   }) async {
-    try {
-      // Validate required fields
-      _validateNonEmpty('title', title);
-      _validateNonEmpty('description', description);
-      _validateNonEmpty('foodType', foodType);
-      _validateNonEmpty('pickupAddress', pickupAddress);
-      _validateLatLng('latitude', latitude);
-      _validateLng('longitude', longitude);
+    final token = await _getToken();
 
-      // Create multipart request
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('${ApiService.base}$baseUrl'),
-      );
+    final payload = <String, dynamic>{
+      'pickupAddress': pickupAddress,
+      'deliveryAddress': deliveryAddress,
+      'pickupLatitude': pickupLatitude,
+      'pickupLongitude': pickupLongitude,
+      'deliveryLatitude': deliveryLatitude,
+      'deliveryLongitude': deliveryLongitude,
+      'deliveryType': deliveryType,
+      'itemType': itemType,
+      'itemDescription': itemDescription,
+      if (donationId != null) 'donationId': donationId,
+      if (estimatedPrice != null) 'estimatedPrice': estimatedPrice,
+      if (notes != null && notes.trim().isNotEmpty) 'notes': notes,
+    };
 
-      // Add headers
-      final token = await _getToken();
-      request.headers.addAll({
-        'Authorization': 'Bearer $token',
-        'Accept': 'application/json',
-      });
+    final res = await http
+        .post(
+          Uri.parse('${ApiService.base}$baseUrl/request'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: jsonEncode(payload),
+        )
+        .timeout(_timeout);
 
-      // Add text fields
-      request.fields.addAll({
-        'title': title,
-        'description': description,
-        'foodType': foodType,
-        'quantity': quantity.toString(),
-        'quantityUnit': quantityUnit,
-        'expiryDate': expiryDate.toIso8601String(),
-        'pickupAddress': pickupAddress,
-        'latitude': latitude.toString(),
-        'longitude': longitude.toString(),
-        'isUrgent': isUrgent.toString(),
-        if (notes != null && notes.trim().isNotEmpty) 'notes': notes,
-      });
-
-      // Add image file if provided
-      if (imageFile != null) {
-        final fileStream = http.ByteStream(imageFile.openRead());
-        final length = await imageFile.length();
-        
-        final multipartFile = http.MultipartFile(
-          'image',
-          fileStream,
-          length,
-          filename: 'donation_${DateTime.now().millisecondsSinceEpoch}.jpg',
-        );
-        
-        request.files.add(multipartFile);
-      }
-
-      // Send request
-      final response = await request.send().timeout(_timeout);
-      final responseBody = await response.stream.bytesToString();
-      
-      return _handleResponse(
-        http.Response(responseBody, response.statusCode),
-        expectedStatus: 201,
-      );
-    } catch (e) {
-      throw Exception('Failed to create donation: $e');
-    }
+    // Expect 201 Created
+    final decoded = _handleResponse(res, expectedStatus: 201);
+    return _asMap(decoded);
   }
 
-  // Helper methods
+  /// Confirm delivery
+  static Future<Map<String, dynamic>> confirmDelivery(String deliveryId) async {
+    final token = await _getToken();
+    final res = await http
+        .post(
+          Uri.parse('${ApiService.base}$baseUrl/$deliveryId/confirm'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Accept': 'application/json',
+          },
+        )
+        .timeout(_timeout);
+
+    final decoded = _handleResponse(res, expectedStatus: 200);
+    return _asMap(decoded);
+  }
+
+  /// Cancel delivery (optional helper)
+  static Future<Map<String, dynamic>> cancelDelivery(
+    String deliveryId, {
+    String? reason,
+  }) async {
+    final token = await _getToken();
+    final res = await http
+        .post(
+          Uri.parse('${ApiService.base}$baseUrl/$deliveryId/cancel'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: jsonEncode({'reason': reason}),
+        )
+        .timeout(_timeout);
+
+    final decoded = _handleResponse(res, expectedStatus: 200);
+    return _asMap(decoded);
+  }
+
+  /// Fetch delivery by ID
+  static Future<Map<String, dynamic>> getDelivery(String deliveryId) async {
+    final token = await _getToken();
+    final res = await http
+        .get(
+          Uri.parse('${ApiService.base}$baseUrl/$deliveryId'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Accept': 'application/json',
+          },
+        )
+        .timeout(_timeout);
+
+    final decoded = _handleResponse(res, expectedStatus: 200);
+    return _asMap(decoded);
+  }
+
+  /// List deliveries — ALWAYS returns a List<dynamic> safely
+  static Future<List<dynamic>> listDeliveries() async {
+    final token = await _getToken();
+    final res = await http
+        .get(
+          Uri.parse('${ApiService.base}$baseUrl'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Accept': 'application/json',
+          },
+        )
+        .timeout(_timeout);
+
+    final decoded = _handleResponse(res, expectedStatus: 200);
+
+    // Safe handling for many API shapes
+    if (decoded is List) return decoded;
+    if (decoded is Map) {
+      if (decoded.containsKey('data')) {
+        final data = decoded['data'];
+        if (data is List) return data;
+        return [data];
+      }
+      return [decoded];
+    }
+    return [decoded];
+  }
+
+  // ---------------- Helpers ----------------
+
   static Future<String> _getToken() async {
     final prefs = await SharedPreferences.getInstance();
     final token = prefs.getString('token');
@@ -97,38 +155,19 @@ class DonationService {
     return token;
   }
 
-  static void _validateNonEmpty(String field, String value) {
-    if (value.trim().isEmpty) {
-      throw ArgumentError('$field cannot be empty');
-    }
-  }
-
-  static void _validateLatLng(String field, double lat) {
-    if (lat < -90 || lat > 90) {
-      throw ArgumentError('$field must be between -90 and 90');
-    }
-  }
-
-  static void _validateLng(String field, double lng) {
-    if (lng < -180 || lng > 180) {
-      throw ArgumentError('$field must be between -180 and 180');
-    }
-  }
-
-  static Map<String, dynamic> _handleResponse(
+  static dynamic _handleResponse(
     http.Response response, {
     required int expectedStatus,
   }) {
     final decoded = _safeJsonDecode(response.bodyBytes);
 
     if (response.statusCode == expectedStatus) {
-      if (decoded is Map<String, dynamic>) return decoded;
-      return {'data': decoded};
+      return decoded;
     }
 
-    final message = _extractErrorMessage(decoded) ??
+    final message =
+        _extractErrorMessage(decoded) ??
         'HTTP ${response.statusCode}: ${response.reasonPhrase ?? 'Unknown error'}';
-
     throw Exception(message);
   }
 
@@ -161,5 +200,349 @@ class DonationService {
       return decoded;
     }
     return null;
+  }
+
+  /// Get available deliveries for paid delivery dashboard
+  static Future<List<Map<String, dynamic>>> getAvailableDeliveries() async {
+    try {
+      // Fetch only PAID deliveries for delivery dashboard
+      final token = await AuthService.getValidToken();
+      final donationsResponse = await ApiService.getJson(
+        '/api/donations/paid-deliveries',
+        token: token,
+      );
+      final requestsResponse = await ApiService.getJson(
+        '/api/requests/paid-deliveries',
+        token: token,
+      );
+      if (donationsResponse['success'] == true &&
+          requestsResponse['success'] == true) {
+        final donations = List<Map<String, dynamic>>.from(
+          donationsResponse['donations'] ?? [],
+        );
+        final requests = List<Map<String, dynamic>>.from(
+          requestsResponse['requests'] ?? [],
+        );
+
+        // Combine donations and requests
+        final allDeliveries = <Map<String, dynamic>>[];
+
+        // Add donations with type indicator
+        for (final donation in donations) {
+          allDeliveries.add({
+            ...donation,
+            'deliveryType': 'donation',
+            'isPaid': true,
+          });
+        }
+
+        // Add requests with type indicator
+        for (final request in requests) {
+          allDeliveries.add({
+            ...request,
+            'deliveryType': 'request',
+            'isPaid': true,
+          });
+        }
+
+        // Sort by creation date (newest first)
+        allDeliveries.sort((a, b) {
+          final aDate =
+              DateTime.tryParse(a['createdAt'] ?? '') ?? DateTime.now();
+          final bDate =
+              DateTime.tryParse(b['createdAt'] ?? '') ?? DateTime.now();
+          return bDate.compareTo(aDate);
+        });
+
+        return allDeliveries;
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching paid deliveries: $e');
+      // Return mock paid delivery data
+      return [
+        {
+          'id': '1',
+          'title': 'Fresh Vegetables Delivery',
+          'description': 'Deliver fresh vegetables to family in need',
+          'foodType': 'Vegetables',
+          'quantity': 5,
+          'pickupAddress': 'Central Karachi Market',
+          'deliveryAddress': 'North Karachi Residential Area',
+          'distance': 8.5,
+          'paymentAmount': 150,
+          'isPaid': true,
+          'deliveryType': 'donation',
+          'urgencyLevel': 'medium',
+          'createdAt': DateTime.now()
+              .subtract(Duration(hours: 1))
+              .toIso8601String(),
+          'status': 'verified',
+        },
+        {
+          'id': '2',
+          'title': 'Cooked Meal Request',
+          'description': 'Urgent delivery of cooked meals to elderly person',
+          'foodType': 'Cooked Food',
+          'quantity': 3,
+          'pickupAddress': 'Central Karachi Restaurant',
+          'deliveryAddress': 'South Karachi',
+          'distance': 6.2,
+          'paymentAmount': 100,
+          'isPaid': true,
+          'deliveryType': 'request',
+          'urgencyLevel': 'high',
+          'createdAt': DateTime.now()
+              .subtract(Duration(minutes: 30))
+              .toIso8601String(),
+          'status': 'verified',
+        },
+      ];
+    }
+  }
+
+  /// Get delivery jobs for dashboard - simplified data
+  static Future<List<Map<String, dynamic>>> getDeliveryJobsForDashboard(
+    String userId,
+  ) async {
+    try {
+      final deliveries = await listDeliveries();
+      return deliveries
+          .map(
+            (delivery) => {
+              'id': delivery['id'] ?? delivery['_id'] ?? '',
+              'type': delivery['deliveryType'] ?? 'Unknown',
+              'status': delivery['status'] ?? 'pending',
+              'pickupAddress': delivery['pickupAddress'] ?? '',
+              'deliveryAddress': delivery['deliveryAddress'] ?? '',
+              'itemType': delivery['itemType'] ?? '',
+              'estimatedPrice': delivery['estimatedPrice'] ?? 0.0,
+              'createdAt':
+                  delivery['createdAt'] ?? DateTime.now().toIso8601String(),
+            },
+          )
+          .toList()
+          .cast<Map<String, dynamic>>();
+    } catch (e) {
+      // Return empty list if no deliveries or service not available
+      return [];
+    }
+  }
+
+  /// Get paid delivery donations
+  static Future<List<Map<String, dynamic>>> getPaidDeliveryDonations() async {
+    try {
+      final response = await ApiService.getJson(
+        '/api/donations/paid-deliveries',
+        token: await AuthService.getValidToken(),
+      );
+
+      if (response['donations'] != null) {
+        return List<Map<String, dynamic>>.from(response['donations']);
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching paid delivery donations: $e');
+      return [];
+    }
+  }
+
+  /// Get paid delivery requests
+  static Future<List<Map<String, dynamic>>> getPaidDeliveryRequests() async {
+    try {
+      final response = await ApiService.getJson(
+        '/api/requests/paid-deliveries',
+        token: await AuthService.getValidToken(),
+      );
+
+      if (response['requests'] != null) {
+        return List<Map<String, dynamic>>.from(response['requests']);
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching paid delivery requests: $e');
+      return [];
+    }
+  }
+
+  /// Accept a delivery offer
+  static Future<Map<String, dynamic>> acceptDelivery(String deliveryId) async {
+    try {
+      final token = await AuthService.getValidToken();
+
+      final response = await http
+          .post(
+            Uri.parse('${ApiService.base}/api/deliveries/$deliveryId/accept'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+            },
+          )
+          .timeout(_timeout);
+
+      final decoded = _handleResponse(response, expectedStatus: 200);
+      return _asMap(decoded);
+    } catch (e) {
+      print('Error accepting delivery: $e');
+      throw Exception('Failed to accept delivery: $e');
+    }
+  }
+
+  /// Accept a paid delivery job
+  static Future<bool> acceptDeliveryJob(String donationId) async {
+    try {
+      final token = await AuthService.getValidToken();
+
+      final response = await http
+          .patch(
+            Uri.parse('${ApiService.base}/api/donations/$donationId/reserve'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({'deliveryPersonId': await _getCurrentUserId()}),
+          )
+          .timeout(_timeout);
+
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error accepting delivery job: $e');
+      return false;
+    }
+  }
+
+  /// Get current user ID from token or preferences
+  static Future<String?> _getCurrentUserId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString('userId');
+    } catch (e) {
+      print('Error getting current user ID: $e');
+      return null;
+    }
+  }
+
+  static Map<String, dynamic> _asMap(dynamic decoded) {
+    if (decoded is Map<String, dynamic>) return decoded;
+    if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    // Some APIs return { data: {...} }
+    if (decoded is List && decoded.isNotEmpty && decoded.first is Map) {
+      return Map<String, dynamic>.from(decoded.first as Map);
+    }
+    return {'data': decoded};
+  }
+
+  /// Get delivery dashboard statistics
+  static Future<Map<String, dynamic>> getDeliveryDashboardStats() async {
+    try {
+      final token = await AuthService.getValidToken();
+      final response = await ApiService.getJson(
+        '/api/deliveries/dashboard-stats',
+        token: token,
+      );
+      return response['stats'] ?? {};
+    } on AuthException catch (e) {
+      print(
+        '⚠️ Authentication error in getDeliveryDashboardStats: ${e.message}',
+      );
+      // Don't throw - return empty stats to prevent dashboard crash
+      return {};
+    } catch (e) {
+      print('❌ Error fetching delivery dashboard stats: $e');
+      // Return empty stats instead of throwing to prevent dashboard crash
+      return {};
+    }
+  }
+
+  /// Update delivery status
+  static Future<Map<String, dynamic>> updateDeliveryStatus({
+    required String deliveryId,
+    required String status,
+    String? notes,
+  }) async {
+    try {
+      final token = await AuthService.getValidToken();
+      if (token == null) throw Exception('No authentication token');
+
+      print('🔄 DELIVERY: Updating delivery status for $deliveryId to $status');
+
+      final response = await http.patch(
+        Uri.parse('${ApiService.base}/api/deliveries/$deliveryId/status'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({'status': status, if (notes != null) 'notes': notes}),
+      );
+
+      print('🔄 DELIVERY: Response status: ${response.statusCode}');
+      print('🔄 DELIVERY: Response body: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final responseData = jsonDecode(response.body);
+        print('✅ DELIVERY: Delivery status updated successfully');
+        return responseData;
+      } else {
+        final errorData = jsonDecode(response.body);
+        throw Exception(
+          errorData['message'] ?? 'Failed to update delivery status',
+        );
+      }
+    } catch (e) {
+      print('❌ Error updating delivery status: $e');
+      throw Exception('Failed to update delivery status: $e');
+    }
+  }
+
+  /// Create delivery offer (requires donor/requester approval)
+  static Future<Map<String, dynamic>> createDeliveryOffer({
+    required String itemId,
+    required String itemType, // 'donation' or 'request'
+    String? message,
+    String? estimatedPickupTime,
+    String? estimatedDeliveryTime,
+  }) async {
+    try {
+      final token = await AuthService.getValidToken();
+      if (token == null) throw Exception('No authentication token');
+
+      print('💰 DELIVERY: Creating delivery offer for $itemType: $itemId');
+
+      final response = await http.post(
+        Uri.parse(
+          '${ApiService.base}/api/delivery-offers/$itemType/$itemId/offer',
+        ),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+        body: jsonEncode({
+          'message': message ?? 'I would like to deliver this item.',
+          'estimatedPickupTime':
+              estimatedPickupTime ??
+              DateTime.now().add(Duration(hours: 1)).toIso8601String(),
+          'estimatedDeliveryTime':
+              estimatedDeliveryTime ??
+              DateTime.now().add(Duration(hours: 3)).toIso8601String(),
+        }),
+      );
+
+      print('💰 DELIVERY: Response status: ${response.statusCode}');
+      print('💰 DELIVERY: Response body: ${response.body}');
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final responseData = jsonDecode(response.body);
+        print('✅ DELIVERY: Delivery offer created successfully');
+        return responseData;
+      } else {
+        final errorData = jsonDecode(response.body);
+        throw Exception(
+          errorData['message'] ?? 'Failed to create delivery offer',
+        );
+      }
+    } catch (e) {
+      print('❌ Error creating delivery offer: $e');
+      throw Exception('Failed to create delivery offer: $e');
+    }
   }
 }

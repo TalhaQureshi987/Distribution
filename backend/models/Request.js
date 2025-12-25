@@ -1,52 +1,124 @@
 const mongoose = require("mongoose");
 
-const RequestSchema = new mongoose.Schema(
+const requestSchema = new mongoose.Schema(
   {
-    requesterId: {
+    userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
     },
-    requesterName: { type: String, required: true },
-    title: { type: String, required: true },
-    description: { type: String, required: true },
-    foodType: { type: String, required: true },
-    quantity: { type: Number, required: true, min: 1 },
-    quantityUnit: { type: String, required: true },
-    neededBy: { type: Date, required: true },
-    pickupAddress: { type: String, required: true },
-    latitude: { type: Number, required: true },
-    longitude: { type: Number, required: true },
-    location: {
-      type: { type: String, enum: ["Point"], default: "Point" },
-      coordinates: { type: [Number], default: undefined }, // [lng, lat]
+    requestType: {
+      type: String,
+      required: true,
+      enum: [
+        "food_request",
+        "volunteer_application",
+        "partnership_request",
+        "feedback_report",
+        "account_verification",
+        "other",
+      ],
     },
-    notes: { type: String },
-    isUrgent: { type: Boolean, default: false },
-    images: [{ type: String }],
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    description: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    priority: {
+      type: String,
+      enum: ["low", "medium", "high", "urgent"],
+      default: "medium",
+    },
     status: {
       type: String,
-      enum: ["pending", "approved", "fulfilled", "cancelled", "expired"],
+      enum: [
+        "pending_verification",
+        "approved",
+        "rejected",
+        "in_progress",
+        "completed",
+      ],
+      default: "pending_verification",
+    },
+    verificationStatus: {
+      type: String,
+      enum: ["pending", "verified", "rejected"],
       default: "pending",
     },
-    fulfilledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    fulfilledAt: { type: Date },
-    reason: { type: String },
+    verificationNotes: {
+      type: String,
+      trim: true,
+    },
+    rejectionReason: {
+      type: String,
+      trim: true,
+    },
+    verifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    verificationDate: {
+      type: Date,
+    },
+    attachments: [
+      {
+        filename: String,
+        url: String,
+        uploadDate: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    contactInfo: {
+      phone: String,
+      email: String,
+      address: String,
+    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
 
-// Pre-save to set GeoJSON coordinates
-RequestSchema.pre("save", function (next) {
-  if (this.longitude != null && this.latitude != null) {
-    this.location = {
-      type: "Point",
-      coordinates: [this.longitude, this.latitude],
-    };
+// Index for efficient queries
+requestSchema.index({ status: 1, verificationStatus: 1 });
+requestSchema.index({ userId: 1, createdAt: -1 });
+requestSchema.index({ requestType: 1, priority: 1 });
+
+// Validation for delivery options in metadata
+requestSchema.pre("save", function (next) {
+  if (this.metadata && this.metadata.deliveryOption) {
+    const validDeliveryOptions = [
+      "Self delivery",
+      "Volunteer Delivery",
+      "Paid Delivery",
+      "Paid Delivery (Earn)",
+    ];
+    if (!validDeliveryOptions.includes(this.metadata.deliveryOption)) {
+      const error = new Error(
+        `Invalid delivery option: ${
+          this.metadata.deliveryOption
+        }. Must be one of: ${validDeliveryOptions.join(", ")}`
+      );
+      return next(error);
+    }
   }
   next();
 });
 
-RequestSchema.index({ location: "2dsphere" });
+const Request = mongoose.model("Request", requestSchema);
 
-module.exports = mongoose.model("Request", RequestSchema);
+// Register alias for lowercase "request" to handle refPath compatibility
+mongoose.model("request", requestSchema);
+
+module.exports = Request;

@@ -1,8 +1,14 @@
+// lib/screens/donor/DonateScreen.dart
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import '../../services/donation_service.dart';
+import '../../services/payment_service.dart';
+import '../../models/donation_model.dart';
+import '../../config/theme.dart';
+import '../../utils/location_utils.dart';
+import '../common/map_picker.dart';
 
 class DonateScreen extends StatefulWidget {
   @override
@@ -10,1295 +16,1179 @@ class DonateScreen extends StatefulWidget {
 }
 
 class _DonateScreenState extends State<DonateScreen> {
-  // Controllers and state variables
-  String selectedCategory = 'Food';
-  String selectedAmount = '';
-  final TextEditingController _customAmountController = TextEditingController();
-  final TextEditingController _descriptionController = TextEditingController();
-  final TextEditingController _expiryController = TextEditingController();
-  final TextEditingController _packagingController = TextEditingController();
-  final TextEditingController _prescriptionController = TextEditingController();
-  final TextEditingController _genderAgeController = TextEditingController();
-  final TextEditingController _conditionController = TextEditingController();
-  final TextEditingController _contactController = TextEditingController();
-  final TextEditingController _locationController = TextEditingController();
-  bool isAnonymous = false;
-  File? _donationImage;
   final _formKey = GlobalKey<FormState>();
-  bool _isLoading = false;
-  String? _selectedDeliveryOption;
-  final ImagePicker _picker = ImagePicker();
 
-  // Constants
-  final double platformFeePercentage = 0.05;
-  final double deliveryFee = 2.99;
+  // Core
+  String _selectedCategory = 'Food';
+  final TextEditingController _descriptionCtrl = TextEditingController();
+  final TextEditingController _quantityCtrl = TextEditingController();
+  final TextEditingController _contactCtrl = TextEditingController();
+  final TextEditingController _locationCtrl = TextEditingController();
+  final TextEditingController _streetAddressCtrl = TextEditingController();
+  final TextEditingController _phoneNumberCtrl = TextEditingController();
+  final TextEditingController _foodNameCtrl = TextEditingController();
+  DateTime? _expiryDate;
 
-  final List<String> deliveryOptions = [
-    'Self Pickup',
-    'Volunteer Delivery',
-    'Paid Delivery',
+  // Main donation categories
+  final List<String> _mainCategories = ['Food', 'Clothes', 'Medicine', 'Other'];
+
+  // Food subcategories
+  String _selectedFoodCategory = 'Cereals & Grains';
+  final List<String> _foodCategories = [
+    'Cereals & Grains',
+    'Rice & Flour',
+    'Spices & Seasonings',
+    'Fruits & Vegetables',
+    'Dairy Products',
+    'Meat & Poultry',
+    'Seafood',
+    'Bakery Items',
+    'Beverages',
+    'Prepared Meals',
+    'Snacks & Sweets',
+    'Cooking Oil & Ghee',
+    'Pulses & Lentils',
+    'Dry Fruits & Nuts',
+    'Other Food Items',
   ];
 
-  final List<String> categories = ['Food', 'Medicine', 'Clothes', 'Money'];
-  final List<IconData> categoryIcons = [
-    Icons.restaurant,
-    Icons.medical_services,
+  // Optional / category-specific
+  final TextEditingController _foodPackagingCtrl = TextEditingController();
+  final TextEditingController _medPrescriptionCtrl = TextEditingController();
+  final TextEditingController _clothesGenderAgeCtrl = TextEditingController();
+  String? _clothesCondition; // New/Gently Used/Used
+
+  // Delivery
+  String _deliveryOption = 'Self delivery';
+
+  // Media & geo
+  File? _image;
+  double? _lat = LocationUtils.centerLatitude; // Default to Central Karachi
+  double? _lng = LocationUtils.centerLongitude;
+
+  bool _submitting = false;
+  bool _showMoreDetails = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _expiryDate = DateTime.now().add(const Duration(days: 7));
+    // Initialize with Central Karachi for default Self delivery option
+    _locationCtrl.text = 'Central Karachi';
+  }
+
+  final List<IconData> _categoryIcons = [
+    Icons.fastfood,
     Icons.checkroom,
-    Icons.attach_money,
+    Icons.medical_services,
+    Icons.more_horiz,
   ];
-  final List<String> presetAmounts = ['\$10', '\$25', '\$50', '\$100', '\$250'];
 
   @override
   void dispose() {
-    _customAmountController.dispose();
-    _descriptionController.dispose();
-    _expiryController.dispose();
-    _packagingController.dispose();
-    _prescriptionController.dispose();
-    _genderAgeController.dispose();
-    _conditionController.dispose();
-    _contactController.dispose();
-    _locationController.dispose();
+    _descriptionCtrl.dispose();
+    _quantityCtrl.dispose();
+    _contactCtrl.dispose();
+    _locationCtrl.dispose();
+    _streetAddressCtrl.dispose();
+    _phoneNumberCtrl.dispose();
+    _foodNameCtrl.dispose();
+    _foodPackagingCtrl.dispose();
+    _medPrescriptionCtrl.dispose();
+    _clothesGenderAgeCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _pickImage() async {
+  String get _quantityLabel => _selectedCategory == 'Food'
+      ? 'Weight (kg)'
+      : _selectedCategory == 'Medicine'
+      ? 'Quantity (units)'
+      : 'Quantity (items)';
+  TextInputType get _quantityKeyboard =>
+      _selectedCategory == 'Food' || _selectedCategory == 'Medicine'
+      ? const TextInputType.numberWithOptions(decimal: true)
+      : TextInputType.number;
+
+  Future<void> _pickExpiryDate() async {
+    final today = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _expiryDate ?? today,
+      firstDate: today,
+      lastDate: today.add(const Duration(days: 365)),
+    );
+    if (picked != null) setState(() => _expiryDate = picked);
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    final picker = ImagePicker();
+    final file = await picker.pickImage(
+      source: source,
+      imageQuality: 85,
+      maxWidth: 1600,
+    );
+    if (file != null) setState(() => _image = File(file.path));
+  }
+
+  bool get _deliverySelected =>
+      _deliveryOption == 'Volunteer Delivery' ||
+      _deliveryOption == 'Paid Delivery';
+
+  bool _validateBeforeSubmit() {
+    if (!_formKey.currentState!.validate()) return false;
+    if (_deliverySelected && (_lat == null || _lng == null)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a location for delivery'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return false;
+    }
+    if (_image == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select an image for donation verification'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _submit() async {
+    print('🔍 DonateScreen: _submit called');
+    if (!_validateBeforeSubmit()) {
+      print('🔍 DonateScreen: Validation failed');
+      return;
+    }
+
+    print('🔍 DonateScreen: Proceeding with donation submission');
+    setState(() => _submitting = true);
     try {
-      final pickedFile = await _picker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 85,
-        maxWidth: 1200,
-        maxHeight: 1200,
+      // Compute distance to center
+      double distanceKm = LocationUtils.calculateDistanceToCenter(_lat, _lng);
+
+      // Check if this is a free donation (Self delivery or Volunteer Delivery)
+      if (_deliveryOption == 'Self delivery' ||
+          _deliveryOption == 'Volunteer Delivery') {
+        print('🔍 DonateScreen: Creating free donation directly');
+        await _createFreeDonation(distanceKm);
+        return;
+      }
+
+      // For Paid Delivery, go through payment flow
+      print('💰 DonateScreen: Calculating payment for Paid Delivery');
+      print('💰 DonateScreen: Distance: ${distanceKm}km');
+      print('💰 DonateScreen: Coordinates: (${_lat}, ${_lng})');
+      print('💰 DonateScreen: Delivery Option: $_deliveryOption');
+
+      final preview = await PaymentService().calculatePaymentPreview(
+        type: 'donate',
+        distance: distanceKm,
+        latitude: _lat,
+        longitude: _lng,
+        deliveryOption: _deliveryOption,
       );
 
-      if (pickedFile != null) {
-        setState(() {
-          _donationImage = File(pickedFile.path);
-        });
+      if (!mounted) return;
+
+      // Validate payment preview response
+      if (preview == null || preview['paymentInfo'] == null) {
+        throw Exception('Invalid payment preview response from server');
       }
+
+      print(
+        '💰 DonateScreen: Payment preview received: ${preview['paymentInfo']}',
+      );
+
+      // Debug: Log the payment info being passed
+      final paymentInfo = preview['paymentInfo'];
+      print('💰 DonateScreen: Fixed Amount: ${paymentInfo['fixedAmount']}');
+      print(
+        '💰 DonateScreen: Delivery Charges: ${paymentInfo['deliveryCharges']}',
+      );
+      print('💰 DonateScreen: Total Amount: ${paymentInfo['totalAmount']}');
+
+      Navigator.pushNamed(
+        context,
+        '/confirm',
+        arguments: {
+          'category': _selectedCategory,
+          'description': _descriptionCtrl.text.trim(),
+          'quantity': _quantityCtrl.text.trim(),
+          'contact': _contactCtrl.text.trim(),
+          'location': _locationCtrl.text.trim(),
+          'streetAddress': _streetAddressCtrl.text.trim(),
+          'phoneNumber': _phoneNumberCtrl.text.trim(),
+          'deliveryOption': _deliveryOption,
+          'expiryDate': _expiryDate?.toIso8601String(),
+          'imagePath': _image?.path,
+          'type': 'donate',
+          'latitude': _lat,
+          'longitude': _lng,
+          'distance': distanceKm,
+          'paymentInfo': preview['paymentInfo'],
+          'notes': _buildNotesForBackend(),
+          'foodName': _foodNameCtrl.text.trim(),
+          'foodCategory': _selectedFoodCategory,
+        },
+      );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to pick image: ${e.toString()}')),
+        SnackBar(
+          content: Text('Failed to create donation: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _createFreeDonation(double distanceKm) async {
+    try {
+      print('🔍 DonateScreen: Creating free donation with DonationService');
+
+      final title = '${_selectedCategory} Donation';
+      final description = _descriptionCtrl.text.trim();
+      final quantity =
+          _selectedCategory == 'Food' || _selectedCategory == 'Medicine'
+          ? double.parse(_quantityCtrl.text.trim()).toInt()
+          : int.parse(_quantityCtrl.text.trim());
+      final quantityUnit = _selectedCategory == 'Food'
+          ? 'kg'
+          : _selectedCategory == 'Medicine'
+          ? 'units'
+          : 'items';
+      final expiryDate =
+          _expiryDate ?? DateTime.now().add(const Duration(days: 7));
+      final pickupAddress =
+          '${_streetAddressCtrl.text.trim()}, ${_locationCtrl.text.trim()}';
+      final notes = _buildNotesForBackend();
+
+      print('🔍 DonateScreen: Donation data prepared:');
+      print('🔍 Title: $title');
+      print('🔍 Description: $description');
+      print('🔍 Food Type: $_selectedCategory');
+      print('🔍 Quantity: $quantity $quantityUnit');
+      print('🔍 Pickup Address: $pickupAddress');
+      print('🔍 Delivery Option: $_deliveryOption');
+      print('🔍 Latitude: $_lat, Longitude: $_lng');
+
+      DonationModel donation;
+
+      if (_image != null && _image!.existsSync()) {
+        print('🔍 DonateScreen: Creating donation with image file');
+        donation = await DonationService.createDonationWithFile(
+          title: title,
+          description: description,
+          foodType: _selectedCategory,
+          quantity: quantity,
+          quantityUnit: quantityUnit,
+          expiryDate: expiryDate,
+          pickupAddress: pickupAddress,
+          latitude: _lat ?? LocationUtils.centerLatitude,
+          longitude: _lng ?? LocationUtils.centerLongitude,
+          notes: notes,
+          isUrgent: false,
+          imageFiles: [_image!],
+          extraImageUrls: const [],
+          fileFieldName: 'images',
+          distance: distanceKm,
+          deliveryOption: _deliveryOption,
+          foodName: _foodNameCtrl.text.trim(),
+          foodCategory: _selectedFoodCategory,
+        );
+      } else {
+        print('🔍 DonateScreen: Creating donation without image');
+        donation = await DonationService.createDonation(
+          title: title,
+          description: description,
+          foodType: _selectedCategory,
+          quantity: quantity,
+          quantityUnit: quantityUnit,
+          expiryDate: expiryDate,
+          pickupAddress: pickupAddress,
+          latitude: _lat ?? LocationUtils.centerLatitude,
+          longitude: _lng ?? LocationUtils.centerLongitude,
+          notes: notes,
+          isUrgent: false,
+          images: const [],
+          distance: distanceKm,
+          deliveryOption: _deliveryOption, // 👈 make sure this comes from UI
+          foodName: _foodNameCtrl.text.trim(),
+          foodCategory: _selectedFoodCategory,
+        );
+      }
+
+      print('✅ DonateScreen: Donation created successfully: ${donation.id}');
+
+      if (!mounted) return;
+
+      // Show appropriate alert message based on delivery type
+      _showDonationSubmissionAlert();
+    } catch (e) {
+      print('💥 DonateScreen: Error creating free donation: $e');
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Failed to create donation: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
       );
     }
   }
 
+  String _buildNotesForBackend() {
+    final parts = <String>[];
+    if (_selectedCategory == 'Food') {
+      if (_expiryDate != null)
+        parts.add('Expiry: ${_expiryDate!.toIso8601String().split('T').first}');
+      if (_foodPackagingCtrl.text.isNotEmpty)
+        parts.add('Packaging: ${_foodPackagingCtrl.text}');
+    } else if (_selectedCategory == 'Medicine') {
+      if (_expiryDate != null)
+        parts.add('Expiry: ${_expiryDate!.toIso8601String().split('T').first}');
+      if (_medPrescriptionCtrl.text.isNotEmpty)
+        parts.add('Prescription: ${_medPrescriptionCtrl.text}');
+    } else if (_selectedCategory == 'Clothes') {
+      if (_clothesGenderAgeCtrl.text.isNotEmpty)
+        parts.add('Gender/Age: ${_clothesGenderAgeCtrl.text}');
+      if (_clothesCondition != null) parts.add('Condition: $_clothesCondition');
+    }
+    return parts.join(' | ');
+  }
+
+  void _showDonationSubmissionAlert() {
+    final isSelfDelivery = _deliveryOption == 'Self delivery';
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: isSelfDelivery
+                      ? Colors.blue.withOpacity(0.1)
+                      : Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  isSelfDelivery
+                      ? Icons.directions_car
+                      : Icons.volunteer_activism,
+                  color: isSelfDelivery ? Colors.blue : Colors.green,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Donation Submitted Successfully!',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.primaryColor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: isSelfDelivery
+                      ? Colors.blue.withOpacity(0.1)
+                      : Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: isSelfDelivery
+                        ? Colors.blue.withOpacity(0.2)
+                        : Colors.green.withOpacity(0.2),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.info_outline,
+                          color: isSelfDelivery ? Colors.blue : Colors.green,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            isSelfDelivery
+                                ? 'Self Delivery Selected'
+                                : 'Volunteer Delivery Selected',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: isSelfDelivery
+                                  ? Colors.blue
+                                  : Colors.green,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      isSelfDelivery
+                          ? 'Your donation has been submitted successfully! You will deliver this donation to our Care Connect office in Central Karachi. Admin will verify your donation and you will receive email notification once approved.'
+                          : 'Your donation has been submitted successfully! A volunteer will be assigned to pick up your donation as soon as possible. You will receive email notifications throughout the process.',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppTheme.primaryTextColor,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                // Navigate to donor dashboard instead of logout
+                Navigator.pushNamedAndRemoveUntil(
+                  context,
+                  '/donor-dashboard',
+                  (route) => false,
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryColor,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: const Text('Go to Dashboard'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final Color bgColor = const Color(0xFFF4F4F4);
-    final Color cardColor = const Color(0xFFD6B6A4);
-    final Color accentColor = Colors.brown;
-
+    final theme = Theme.of(context);
     return Scaffold(
-      backgroundColor: bgColor,
       appBar: AppBar(
-        title: Text('Make a Donation'),
-        backgroundColor: accentColor,
-        elevation: 0,
+        title: const Text('Donate Item'),
+        backgroundColor: AppTheme.surfaceColor,
+        foregroundColor: AppTheme.primaryTextColor,
       ),
-      body: SafeArea(
-        child: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFFF4F4F4), Color(0xFFE8F5E9)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 18.0,
-                vertical: 16,
-              ),
+      body: AbsorbPointer(
+        absorbing: _submitting,
+        child: Stack(
+          children: [
+            SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
               child: Form(
                 key: _formKey,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Hero Banner
-                    _buildHeroBanner(cardColor),
-                    const SizedBox(height: 18),
-
-                    // Donation Category Selection
-                    _sectionTitle("Donation Category"),
-                    _buildCategoryCard(accentColor),
-                    const SizedBox(height: 10),
-                    Divider(height: 24, thickness: 1, color: Colors.grey[200]),
-
-                    // Conditional sections based on donation type
-                    selectedCategory == 'Money'
-                        ? _buildMoneyDonationSection(accentColor)
-                        : _buildInKindDonationSection(accentColor),
-
-                    // Common sections
-                    _buildPrivacySection(accentColor),
-                    const SizedBox(height: 30),
-                    if (selectedCategory != 'Money')
-                      _buildDeliverySection(accentColor),
-                    const SizedBox(height: 20),
-                    _buildDonateButton(accentColor),
-                    const SizedBox(height: 20),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHeroBanner(Color cardColor) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: Container(
-        height: 140,
-        width: double.infinity,
-        decoration: BoxDecoration(
-          color: cardColor,
-          image: DecorationImage(
-            image: AssetImage('images/donations2.png'),
-            fit: BoxFit.cover,
-            colorFilter: ColorFilter.mode(
-              cardColor.withOpacity(0.25),
-              BlendMode.darken,
-            ),
-          ),
-        ),
-        child: Stack(
-          children: [
-            Positioned(
-              left: 20,
-              bottom: 18,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    "Support a Cause",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      shadows: [Shadow(blurRadius: 8, color: Colors.black26)],
-                    ),
-                  ),
-                  SizedBox(height: 6),
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.emoji_events,
-                        color: Colors.yellow[700],
-                        size: 20,
+                    // Category chips
+                    Text(
+                      'Category',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: AppTheme.primaryTextColor,
                       ),
-                      SizedBox(width: 6),
-                      Text(
-                        "Over \$10,000 donated this month!",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                          shadows: [
-                            Shadow(blurRadius: 6, color: Colors.black26),
-                          ],
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 44,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemBuilder: (_, i) {
+                          final c = _mainCategories[i];
+                          final selected = _selectedCategory == c;
+                          return ChoiceChip(
+                            label: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  _categoryIcons[i],
+                                  size: 18,
+                                  color: selected
+                                      ? Colors.white
+                                      : AppTheme.primaryColor,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  c,
+                                  style: TextStyle(
+                                    color: selected
+                                        ? Colors.white
+                                        : AppTheme.primaryTextColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            selected: selected,
+                            selectedColor: AppTheme.primaryColor,
+                            onSelected: (_) => setState(() {
+                              _selectedCategory = c;
+                              // reset category-specific inputs when switching
+                              _foodPackagingCtrl.clear();
+                              _medPrescriptionCtrl.clear();
+                              _clothesGenderAgeCtrl.clear();
+                              _clothesCondition = null;
+                              _expiryDate = null;
+                            }),
+                          );
+                        },
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemCount: _mainCategories.length,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Description
+                    TextFormField(
+                      controller: _descriptionCtrl,
+                      decoration: InputDecoration(
+                        labelText: 'Description',
+                        hintText: 'What are you donating?',
+                        prefixIcon: Icon(
+                          Icons.info_outline,
+                          color: AppTheme.primaryColor,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: AppTheme.primaryColor,
+                            width: 2,
+                          ),
                         ),
                       ),
+                      maxLines: 3,
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? 'Please enter a description'
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Quantity field
+                    TextFormField(
+                      controller: _quantityCtrl,
+                      decoration: InputDecoration(
+                        labelText: _quantityLabel,
+                        prefixIcon: Icon(
+                          Icons.format_list_numbered,
+                          color: AppTheme.primaryColor,
+                        ),
+                        prefixText: _selectedCategory == 'Food'
+                            ? 'kg '
+                            : _selectedCategory == 'Medicine'
+                            ? 'units '
+                            : 'items ',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: AppTheme.primaryColor,
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                      keyboardType: _quantityKeyboard,
+                      inputFormatters:
+                          _selectedCategory == 'Food' ||
+                              _selectedCategory == 'Medicine'
+                          ? [
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'^\d*\.?\d{0,2}'),
+                              ),
+                            ]
+                          : [FilteringTextInputFormatter.digitsOnly],
+                      validator: (v) {
+                        if (v == null || v.trim().isEmpty)
+                          return 'Please enter a quantity';
+                        final ok =
+                            _selectedCategory == 'Food' ||
+                                _selectedCategory == 'Medicine'
+                            ? double.tryParse(v) != null && double.parse(v) > 0
+                            : int.tryParse(v) != null && int.parse(v) > 0;
+                        return ok ? null : 'Please enter a valid quantity';
+                      },
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Food name - only required for Food category
+                    if (_selectedCategory == 'Food') ...[
+                      TextFormField(
+                        controller: _foodNameCtrl,
+                        decoration: InputDecoration(
+                          labelText: 'Food Name',
+                          prefixIcon: Icon(
+                            Icons.fastfood,
+                            color: AppTheme.primaryColor,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(
+                              color: AppTheme.primaryColor,
+                              width: 2,
+                            ),
+                          ),
+                        ),
+                        validator: (v) => (v == null || v.trim().isEmpty)
+                            ? 'Please enter a food name'
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
                     ],
-                  ),
-                ],
+
+                    // Food category
+                    if (_selectedCategory == 'Food') ...[
+                      DropdownButtonFormField<String>(
+                        value: _selectedFoodCategory,
+                        items: _foodCategories
+                            .map(
+                              (e) => DropdownMenuItem(value: e, child: Text(e)),
+                            )
+                            .toList(),
+                        onChanged: (v) =>
+                            setState(() => _selectedFoodCategory = v!),
+                        decoration: InputDecoration(
+                          labelText: 'Food Category',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(
+                              color: AppTheme.primaryColor,
+                              width: 2,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    // Expiry date for food/medicine
+                    if (_selectedCategory == 'Food' ||
+                        _selectedCategory == 'Medicine') ...[
+                      InkWell(
+                        onTap: _pickExpiryDate,
+                        child: InputDecorator(
+                          decoration: InputDecoration(
+                            labelText: 'Expiry Date',
+                            prefixIcon: Icon(
+                              Icons.event,
+                              color: AppTheme.primaryColor,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: AppTheme.primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          child: Text(
+                            _expiryDate == null
+                                ? 'Select date'
+                                : _expiryDate!
+                                      .toIso8601String()
+                                      .split('T')
+                                      .first,
+                            style: TextStyle(
+                              color: _expiryDate == null
+                                  ? Colors.grey
+                                  : theme.textTheme.bodyMedium?.color,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    // Delivery options
+                    DropdownButtonFormField<String>(
+                      value: _deliveryOption,
+                      decoration: InputDecoration(
+                        labelText: 'Delivery Option',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        prefixIcon: Icon(
+                          Icons.local_shipping,
+                          color: AppTheme.primaryColor,
+                        ),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'Self delivery',
+                          child: Text('Self delivery'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Volunteer Delivery',
+                          child: Text('Volunteer Delivery'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Paid Delivery',
+                          child: Text('Paid Delivery'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        setState(() {
+                          _deliveryOption = value!;
+
+                          // For self delivery, set fixed office location
+                          if (value == 'Self delivery') {
+                            _locationCtrl.text =
+                                'Care Connect Office - Central Karachi';
+                            _streetAddressCtrl.text =
+                                'Care Connect Office, Main Building';
+                            _lat = LocationUtils
+                                .centerLatitude; // Fixed office coordinates
+                            _lng = LocationUtils.centerLongitude;
+                          } else {
+                            // Clear location for other options to allow user selection
+                            if (_deliveryOption == 'Self delivery') {
+                              _locationCtrl.clear();
+                              _streetAddressCtrl.clear();
+                              _lat = null;
+                              _lng = null;
+                            }
+                          }
+                        });
+                      },
+                      validator: (value) => value == null
+                          ? 'Please select delivery option'
+                          : null,
+                    ),
+
+                    // Show info text for self delivery
+                    if (_deliveryOption == 'Self delivery')
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.info_outline,
+                                color: Colors.blue.shade600,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'You will deliver this donation to our Care Connect office in Central Karachi. No delivery charges apply.',
+                                  style: TextStyle(
+                                    color: Colors.blue.shade700,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                    // Location (map picker) - only visible when delivery selected
+                    if (_deliverySelected &&
+                        _deliveryOption != 'Self delivery') ...[
+                      TextFormField(
+                        controller: _locationCtrl,
+                        readOnly: true,
+                        decoration: InputDecoration(
+                          labelText: 'Pickup/Delivery Location',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(
+                              color: AppTheme.primaryColor,
+                              width: 2,
+                            ),
+                          ),
+                          suffixIcon: IconButton(
+                            icon: Icon(Icons.map, color: AppTheme.primaryColor),
+                            onPressed: () async {
+                              final result = await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const MapPicker(),
+                                ),
+                              );
+                              if (result != null && result is Map) {
+                                setState(() {
+                                  _locationCtrl.text = (result['address'] ?? '')
+                                      .toString();
+                                  _lat = (result['lat'] as num?)?.toDouble();
+                                  _lng = (result['lng'] as num?)?.toDouble();
+                                });
+                              }
+                            },
+                          ),
+                        ),
+                        validator: (v) {
+                          if (_deliverySelected &&
+                              (v == null || v.trim().isEmpty)) {
+                            return 'Please select a location';
+                          }
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                    ] else
+                      const SizedBox.shrink(),
+
+                    // Street Address
+                    TextFormField(
+                      controller: _streetAddressCtrl,
+                      decoration: InputDecoration(
+                        labelText: 'Street Address',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: AppTheme.primaryColor,
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? 'Please enter your street address'
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Phone Number
+                    TextFormField(
+                      controller: _phoneNumberCtrl,
+                      decoration: InputDecoration(
+                        labelText: 'Phone Number',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: AppTheme.primaryColor,
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                      keyboardType: TextInputType.phone,
+                      validator: (v) {
+                        if (v == null || v.trim().isEmpty)
+                          return 'Please enter a phone number';
+                        final cleaned = v.replaceAll(RegExp(r'\D'), '');
+                        return cleaned.length < 7
+                            ? 'Please enter a valid phone number'
+                            : null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Optional details (collapsible)
+                    Row(
+                      children: [
+                        Text(
+                          'More details (optional)',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            color: AppTheme.primaryTextColor,
+                          ),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: () => setState(
+                            () => _showMoreDetails = !_showMoreDetails,
+                          ),
+                          child: Text(
+                            _showMoreDetails ? 'Hide' : 'Show',
+                            style: TextStyle(color: AppTheme.primaryColor),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (_showMoreDetails) ...[
+                      if (_selectedCategory == 'Food') ...[
+                        TextFormField(
+                          controller: _foodPackagingCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Packaging Type (optional)',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: AppTheme.primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      if (_selectedCategory == 'Medicine') ...[
+                        TextFormField(
+                          controller: _medPrescriptionCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Prescription Details (optional)',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: AppTheme.primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      if (_selectedCategory == 'Clothes') ...[
+                        TextFormField(
+                          controller: _clothesGenderAgeCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Gender/Age Group (optional)',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: AppTheme.primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<String>(
+                          value: _clothesCondition,
+                          items: const ['New', 'Gently Used', 'Used']
+                              .map(
+                                (e) =>
+                                    DropdownMenuItem(value: e, child: Text(e)),
+                              )
+                              .toList(),
+                          onChanged: (v) =>
+                              setState(() => _clothesCondition = v),
+                          decoration: InputDecoration(
+                            labelText: 'Condition (optional)',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: AppTheme.primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+
+                      // Image picker
+                      Text(
+                        'Add a Photo (Required)',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: AppTheme.primaryTextColor,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Image preview
+                          _image != null
+                              ? Stack(
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: Image.file(
+                                        _image!,
+                                        width: 80,
+                                        height: 80,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                    Positioned(
+                                      top: 0,
+                                      right: 0,
+                                      child: GestureDetector(
+                                        onTap: () =>
+                                            setState(() => _image = null),
+                                        child: const CircleAvatar(
+                                          radius: 12,
+                                          backgroundColor: Colors.red,
+                                          child: Icon(
+                                            Icons.close,
+                                            size: 16,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Container(
+                                  width: 80,
+                                  height: 80,
+                                  decoration: BoxDecoration(
+                                    color: Colors.grey[200],
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: _image == null
+                                          ? Colors.red.withOpacity(0.5)
+                                          : Colors.grey.shade300,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Icon(
+                                    Icons.image,
+                                    color: Colors.grey[400],
+                                    size: 36,
+                                  ),
+                                ),
+                          const SizedBox(height: 8),
+                          // Required field indicator
+                          if (_image == null)
+                            Text(
+                              '* Photo is required for donation verification',
+                              style: TextStyle(
+                                color: Colors.red.shade600,
+                                fontSize: 12,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          const SizedBox(height: 12),
+                          // Buttons in flexible row
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: () => _pickImage(ImageSource.camera),
+                                icon: Icon(
+                                  Icons.photo_camera,
+                                  color: AppTheme.primaryColor,
+                                ),
+                                label: Text(
+                                  'Camera',
+                                  style: TextStyle(
+                                    color: AppTheme.primaryColor,
+                                  ),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  side: BorderSide(
+                                    color: AppTheme.primaryColor,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                              ),
+                              ElevatedButton.icon(
+                                onPressed: () =>
+                                    _pickImage(ImageSource.gallery),
+                                icon: const Icon(Icons.upload),
+                                label: const Text('Gallery'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppTheme.primaryColor,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ],
+
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton(
+                        onPressed: _submitting ? null : _submit,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.primaryColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: _submitting
+                            ? const SizedBox(
+                                height: 22,
+                                width: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.white,
+                                  ),
+                                ),
+                              )
+                            : const Text(
+                                'Submit Donation',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                ),
               ),
             ),
           ],
         ),
       ),
     );
-  }
-
-  Widget _buildCategoryCard(Color accentColor) {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-        child: Container(
-          height: 56,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: categories.length,
-            itemBuilder: (context, index) {
-              final category = categories[index];
-              final isSelected = selectedCategory == category;
-              final icon = categoryIcons[index];
-              return AnimatedContainer(
-                duration: Duration(milliseconds: 250),
-                curve: Curves.easeInOut,
-                margin: EdgeInsets.only(right: 14),
-                child: GestureDetector(
-                  onTap: () => setState(() => selectedCategory = category),
-                  child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: isSelected ? accentColor : Colors.white,
-                      borderRadius: BorderRadius.circular(28),
-                      border: Border.all(
-                        color: isSelected ? accentColor : Colors.grey.shade300,
-                        width: 2,
-                      ),
-                      boxShadow:
-                          isSelected
-                              ? [
-                                BoxShadow(
-                                  color: accentColor.withOpacity(0.18),
-                                  blurRadius: 10,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ]
-                              : [],
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          icon,
-                          color: isSelected ? Colors.white : accentColor,
-                          size: 20,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          category,
-                          style: TextStyle(
-                            color: isSelected ? Colors.white : Colors.black87,
-                            fontWeight:
-                                isSelected ? FontWeight.bold : FontWeight.w500,
-                            fontSize: 15,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMoneyDonationSection(Color accentColor) {
-    return Column(
-      children: [
-        _sectionTitle("Donation Amount"),
-        Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-            child: Column(
-              children: [
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: NeverScrollableScrollPhysics(),
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                    childAspectRatio: 2.5,
-                  ),
-                  itemCount: presetAmounts.length + 1,
-                  itemBuilder: (context, index) {
-                    if (index == presetAmounts.length) {
-                      return _buildAmountOption(
-                        'Custom',
-                        selectedAmount == 'Custom',
-                        accentColor,
-                      );
-                    }
-                    return _buildAmountOption(
-                      presetAmounts[index],
-                      selectedAmount == presetAmounts[index],
-                      accentColor,
-                    );
-                  },
-                ),
-                if (selectedAmount == 'Custom') ...[
-                  const SizedBox(height: 10),
-                  _sectionTitle("Custom Amount"),
-                  Card(
-                    elevation: 2,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    margin: const EdgeInsets.symmetric(vertical: 8),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 8,
-                        horizontal: 8,
-                      ),
-                      child: _buildCustomAmountInput(accentColor),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildAmountOption(String amount, bool isSelected, Color accentColor) {
-    return GestureDetector(
-      onTap:
-          () => setState(() {
-            selectedAmount = amount;
-            if (amount == 'Custom') _customAmountController.clear();
-          }),
-      child: Container(
-        decoration: BoxDecoration(
-          color: isSelected ? accentColor : Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? accentColor : Colors.grey.shade300,
-            width: 2,
-          ),
-          boxShadow:
-              isSelected
-                  ? [
-                    BoxShadow(
-                      color: accentColor.withOpacity(0.3),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                    ),
-                  ]
-                  : [],
-        ),
-        child: Center(
-          child: Text(
-            amount,
-            style: TextStyle(
-              color: isSelected ? Colors.white : Colors.black87,
-              fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-              fontSize: amount == 'Custom' ? 14 : 16,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCustomAmountInput(Color accentColor) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade300),
-        boxShadow: [
-          BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 2)),
-        ],
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.attach_money, color: accentColor, size: 22),
-          SizedBox(width: 8),
-          Expanded(
-            child: TextField(
-              controller: _customAmountController,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: InputDecoration(
-                prefixText: '\$',
-                hintText: 'Enter amount',
-                border: InputBorder.none,
-                hintStyle: TextStyle(color: Colors.grey[500]),
-              ),
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInKindDonationSection(Color accentColor) {
-    return Column(
-      children: [
-        _sectionTitle("Add a Photo (optional)"),
-        Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              children: [
-                if (_donationImage != null) ...[
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Image.file(
-                      _donationImage!,
-                      width: double.infinity,
-                      height: 200,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Selected Image',
-                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                      ),
-                      IconButton(
-                        icon: Icon(Icons.delete, color: Colors.red),
-                        onPressed: () => setState(() => _donationImage = null),
-                      ),
-                    ],
-                  ),
-                  const Divider(),
-                ],
-                ElevatedButton.icon(
-                  onPressed: _pickImage,
-                  icon: Icon(Icons.upload),
-                  label: Text(
-                    _donationImage == null ? 'Upload Image' : 'Change Image',
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: accentColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    minimumSize: Size(double.infinity, 50),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Upload clear photos of your donation (max 5MB)',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-              ],
-            ),
-          ),
-        ),
-        _sectionTitle("Donation Details"),
-        Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-            child: Column(
-              children: [
-                _buildDonationDetails(accentColor),
-                if (selectedCategory == 'Food') _buildFoodFields(),
-                if (selectedCategory == 'Medicine') _buildMedicineFields(),
-                if (selectedCategory == 'Clothes') _buildClothesFields(),
-                _buildContactFields(),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDonationDetails(Color accentColor) {
-    IconData icon;
-    Color iconColor;
-    String hint;
-    switch (selectedCategory) {
-      case 'Food':
-        icon = Icons.restaurant;
-        iconColor = Colors.orange[700]!;
-        hint = 'Describe the food you want to donate (type, quantity, etc.)';
-        break;
-      case 'Medicine':
-        icon = Icons.medical_services;
-        iconColor = Colors.red[700]!;
-        hint = 'Describe the medicine you want to donate (name, expiry, etc.)';
-        break;
-      case 'Clothes':
-        icon = Icons.checkroom;
-        iconColor = Colors.blue[700]!;
-        hint = 'Describe the clothes you want to donate (type, size, etc.)';
-        break;
-      default:
-        icon = Icons.info_outline;
-        iconColor = accentColor;
-        hint = 'Tell us about your donation (optional)';
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 2)),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: iconColor.withOpacity(0.12),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, color: iconColor, size: 28),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Description*',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    TextFormField(
-                      controller: _descriptionController,
-                      maxLines: 5,
-                      minLines: 3,
-                      decoration: InputDecoration(
-                        hintText: hint,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: accentColor, width: 2),
-                        ),
-                        errorBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.red, width: 1.5),
-                        ),
-                        focusedErrorBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide(color: Colors.red, width: 1.5),
-                        ),
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 14,
-                        ),
-                        suffixIcon:
-                            _descriptionController.text.isNotEmpty
-                                ? IconButton(
-                                  icon: Icon(Icons.clear, size: 20),
-                                  onPressed: () {
-                                    setState(() {
-                                      _descriptionController.clear();
-                                    });
-                                  },
-                                )
-                                : null,
-                      ),
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'Description is required';
-                        }
-                        if (value.trim().length < 10) {
-                          return 'Description must be at least 10 characters';
-                        }
-                        return null;
-                      },
-                      onChanged: (value) {
-                        setState(() {});
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.only(left: 52),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Please include all relevant details',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${_descriptionController.text.length}/2000',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color:
-                        _descriptionController.text.length > 2000
-                            ? Colors.red
-                            : Colors.grey[600],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFoodFields() {
-    return Column(
-      children: [
-        const SizedBox(height: 10),
-        TextFormField(
-          controller: _expiryController,
-          decoration: InputDecoration(
-            labelText: 'Expiry Date',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          validator:
-              (value) =>
-                  value == null || value.isEmpty ? 'Enter expiry date' : null,
-        ),
-        const SizedBox(height: 10),
-        TextFormField(
-          controller: _packagingController,
-          decoration: InputDecoration(
-            labelText: 'Packaging Type',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          validator:
-              (value) =>
-                  value == null || value.isEmpty
-                      ? 'Enter packaging type'
-                      : null,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildMedicineFields() {
-    return Column(
-      children: [
-        const SizedBox(height: 10),
-        TextFormField(
-          controller: _expiryController,
-          decoration: InputDecoration(
-            labelText: 'Expiry Date',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          validator:
-              (value) =>
-                  value == null || value.isEmpty ? 'Enter expiry date' : null,
-        ),
-        const SizedBox(height: 10),
-        DropdownButtonFormField<String>(
-          value:
-              _prescriptionController.text.isNotEmpty
-                  ? _prescriptionController.text
-                  : null,
-          items:
-              [
-                'Yes',
-                'No',
-              ].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
-          onChanged:
-              (val) => setState(() => _prescriptionController.text = val ?? ''),
-          decoration: InputDecoration(
-            labelText: 'Prescription Required?',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          validator:
-              (value) =>
-                  value == null || value.isEmpty
-                      ? 'Select prescription requirement'
-                      : null,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildClothesFields() {
-    return Column(
-      children: [
-        const SizedBox(height: 10),
-        TextFormField(
-          controller: _genderAgeController,
-          decoration: InputDecoration(
-            labelText: 'Gender/Age Group',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          validator:
-              (value) =>
-                  value == null || value.isEmpty
-                      ? 'Enter gender/age group'
-                      : null,
-        ),
-        const SizedBox(height: 10),
-        DropdownButtonFormField<String>(
-          value:
-              _conditionController.text.isNotEmpty
-                  ? _conditionController.text
-                  : null,
-          items:
-              [
-                'New',
-                'Gently Used',
-                'Used',
-              ].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
-          onChanged:
-              (val) => setState(() => _conditionController.text = val ?? ''),
-          decoration: InputDecoration(
-            labelText: 'Condition',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          validator:
-              (value) =>
-                  value == null || value.isEmpty ? 'Select condition' : null,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildContactFields() {
-    return Column(
-      children: [
-        const SizedBox(height: 10),
-        TextFormField(
-          controller: _contactController,
-          decoration: InputDecoration(
-            labelText: 'Contact Number',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          keyboardType: TextInputType.phone,
-          validator:
-              (value) =>
-                  value == null || value.isEmpty
-                      ? 'Enter contact number'
-                      : null,
-        ),
-        const SizedBox(height: 10),
-        TextFormField(
-          controller: _locationController,
-          decoration: InputDecoration(
-            labelText: 'Pickup Location',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          ),
-          validator:
-              (value) =>
-                  value == null || value.isEmpty
-                      ? 'Enter pickup location'
-                      : null,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPrivacySection(Color accentColor) {
-    return Column(
-      children: [
-        _sectionTitle("Privacy"),
-        Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.grey.shade200),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black12,
-                    blurRadius: 6,
-                    offset: Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.visibility_off, color: Colors.grey[600], size: 25),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Padding(
-                      padding: EdgeInsets.only(right: 8),
-                      child: Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              'Make this donation anonymous',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.black87,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 2,
-                              softWrap: true,
-                            ),
-                          ),
-                          SizedBox(width: 5),
-                          Tooltip(
-                            message:
-                                'Your name will not be shown to the recipient.',
-                            child: Icon(
-                              Icons.info_outline,
-                              color: Colors.grey[400],
-                              size: 10,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Switch(
-                    value: isAnonymous,
-                    onChanged: (value) => setState(() => isAnonymous = value),
-                    activeColor: accentColor,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDeliverySection(Color accentColor) {
-    return Column(
-      children: [
-        const SizedBox(height: 10),
-        Divider(height: 24, thickness: 1, color: Colors.grey[200]),
-        _sectionTitle("Delivery Option"),
-        Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-          ),
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-            child: Column(
-              children:
-                  deliveryOptions
-                      .map(
-                        (option) => RadioListTile<String>(
-                          title: Text(option),
-                          subtitle:
-                              option == 'Paid Delivery'
-                                  ? Text(
-                                    'Small fee applies for logistics support',
-                                  )
-                                  : null,
-                          value: option,
-                          groupValue: _selectedDeliveryOption,
-                          onChanged:
-                              (value) => setState(
-                                () => _selectedDeliveryOption = value,
-                              ),
-                          activeColor: accentColor,
-                        ),
-                      )
-                      .toList(),
-            ),
-          ),
-        ),
-        if (_selectedDeliveryOption == null)
-          Padding(
-            padding: const EdgeInsets.only(left: 8.0, bottom: 8.0),
-            child: Text(
-              "Please select a delivery option",
-              style: TextStyle(color: Colors.red, fontSize: 12),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildDonateButton(Color accentColor) {
-    return Center(
-      child: Column(
-        children: [
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed:
-                  _isLoading
-                      ? null
-                      : () {
-                        if (_formKey.currentState!.validate() ||
-                            selectedCategory == 'Money') {
-                          if (selectedCategory != 'Money' &&
-                              _selectedDeliveryOption == null) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  'Please select a delivery option',
-                                ),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
-                            return;
-                          }
-                          _showDonationConfirmation(context);
-                        }
-                      },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: accentColor,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 22),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                elevation: 10,
-                shadowColor: accentColor.withOpacity(0.25),
-                textStyle: const TextStyle(
-                  fontSize: 21,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              child:
-                  _isLoading
-                      ? CircularProgressIndicator(color: Colors.white)
-                      : Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.favorite, size: 28),
-                          const SizedBox(width: 16),
-                          Text(
-                            "Donate Now",
-                            style: TextStyle(
-                              fontSize: 21,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                        ],
-                      ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.verified_user, color: accentColor, size: 18),
-              SizedBox(width: 6),
-              Text(
-                'Secure Payment',
-                style: TextStyle(
-                  color: accentColor,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _sectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 4, bottom: 2, top: 2),
-      child: Text(
-        title,
-        style: TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-          color: Colors.black87,
-          letterSpacing: 0.2,
-        ),
-      ),
-    );
-  }
-
-  void _showDonationConfirmation(BuildContext context) {
-    final amount =
-        selectedAmount == 'Custom'
-            ? _customAmountController.text
-            : selectedAmount;
-
-    if (amount.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Please select or enter an amount'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            title: Text('Confirm Donation'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Category: $selectedCategory'),
-                if (selectedCategory == 'Money') ...[
-                  Text('Amount: $amount'),
-                  Text(
-                    'Platform Fee: \$${(double.tryParse(amount.replaceAll('\$', '')) ?? 0.0 * platformFeePercentage).toStringAsFixed(2)}',
-                  ),
-                ] else ...[
-                  if (_descriptionController.text.isNotEmpty)
-                    Text('Description: ${_descriptionController.text}'),
-                  Text('Delivery: $_selectedDeliveryOption'),
-                  if (_selectedDeliveryOption == 'Paid Delivery')
-                    Text('Delivery Fee: \$${deliveryFee.toStringAsFixed(2)}'),
-                ],
-                Text('Anonymous: ${isAnonymous ? "Yes" : "No"}'),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  _processDonation();
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.brown,
-                  foregroundColor: Colors.white,
-                ),
-                child: Text('Confirm'),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<bool> _showMonetaryPaymentDialog(String amount) async {
-    double donationAmount = double.tryParse(amount.replaceAll('\$', '')) ?? 0.0;
-    double platformFee = donationAmount * platformFeePercentage;
-    double totalAmount = donationAmount + platformFee;
-
-    return await showDialog<bool>(
-          context: context,
-          builder:
-              (context) => AlertDialog(
-                title: Text('Donation Payment'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Donation Amount: \$${donationAmount.toStringAsFixed(2)}',
-                    ),
-                    Text(
-                      'Platform Fee (5%): \$${platformFee.toStringAsFixed(2)}',
-                    ),
-                    Divider(),
-                    Text(
-                      'Total Amount: \$${totalAmount.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      'The platform fee helps us maintain the service and support more people in need.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: Text('Cancel'),
-                  ),
-                  ElevatedButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.brown,
-                      foregroundColor: Colors.white,
-                    ),
-                    child: Text('Pay & Donate'),
-                  ),
-                ],
-              ),
-        ) ??
-        false;
-  }
-
-  Future<bool> _showDeliveryPaymentDialog() async {
-    return await showDialog<bool>(
-          context: context,
-          builder:
-              (context) => AlertDialog(
-                title: Text('Delivery Fee'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'A delivery fee of \$${deliveryFee.toStringAsFixed(2)} will be charged for handling logistics.',
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      'This fee helps cover delivery costs and supports our volunteer network.',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: Text('Cancel'),
-                  ),
-                  ElevatedButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.brown,
-                      foregroundColor: Colors.white,
-                    ),
-                    child: Text('Pay & Continue'),
-                  ),
-                ],
-              ),
-        ) ??
-        false;
-  }
-
-  int _parseQuantity(String amountStr) {
-    // remove non-digit characters, e.g. "$25" -> "25"
-    final cleaned = amountStr.replaceAll(RegExp(r'[^\d]'), '');
-    return int.tryParse(cleaned) ?? 1;
-  }
-
-  Future<void> _processDonation() async {
-    if (_descriptionController.text.trim().isEmpty &&
-        selectedCategory != 'Money') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a description')),
-      );
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      final amountStr =
-          selectedAmount == 'Custom'
-              ? _customAmountController.text
-              : selectedAmount;
-
-      if (amountStr.isEmpty && selectedCategory == 'Money') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please select or enter an amount'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        setState(() => _isLoading = false);
-        return;
-      }
-
-      // Payment flows
-      bool paymentSuccess = true;
-      if (selectedCategory == 'Money') {
-        paymentSuccess = await _showMonetaryPaymentDialog(amountStr);
-        if (!paymentSuccess) {
-          setState(() => _isLoading = false);
-          return;
-        }
-      } else if (_selectedDeliveryOption == 'Paid Delivery') {
-        paymentSuccess = await _showDeliveryPaymentDialog();
-        if (!paymentSuccess) {
-          setState(() => _isLoading = false);
-          return;
-        }
-      }
-
-      // Quantity parsing (remove $ and non-digits)
-      final qty = _parseQuantity(amountStr);
-
-      // If we have a local File from ImagePicker, use multipart upload method:
-      if (_donationImage != null) {
-        final donation = await DonationService.createDonationWithFile(
-          title: selectedCategory,
-          description: _descriptionController.text.trim(),
-          foodType: selectedCategory,
-          quantity: qty,
-          quantityUnit: selectedCategory == 'Money' ? 'USD' : 'pieces',
-          expiryDate: DateTime.now().add(const Duration(days: 7)),
-          pickupAddress: _locationController.text,
-          latitude: 0.0,
-          longitude: 0.0,
-          notes: _packagingController.text,
-          isUrgent: false,
-          imageFile: _donationImage,
-        );
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Donation created: ${donation.id}'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      } else {
-        // No file — use JSON method (pass remote URLs if available)
-        final donation = await DonationService.createDonation(
-          title: selectedCategory,
-          description: _descriptionController.text.trim(),
-          foodType: selectedCategory,
-          quantity: qty,
-          quantityUnit: selectedCategory == 'Money' ? 'USD' : 'pieces',
-          expiryDate: DateTime.now().add(const Duration(days: 7)),
-          pickupAddress: _locationController.text,
-          latitude: 0.0,
-          longitude: 0.0,
-          notes: _packagingController.text,
-          isUrgent: false,
-          images: [], // add image URLs here if you uploaded separately
-        );
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Donation created: ${donation.id}'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-
-      Navigator.pop(context);
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to create donation: ${e.toString()}'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
   }
 }

@@ -140,9 +140,9 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                     if (_formKey.currentState!.validate()) {
                       try {
                         // Change password using AuthService
-                        await AuthService.changePassword(
-                          currentPassword: _currentPasswordController.text,
-                          newPassword: _newPasswordController.text,
+                        await AuthService.updatePassword(
+                          _currentPasswordController.text,
+                          _newPasswordController.text,
                         );
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(

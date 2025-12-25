@@ -54,7 +54,7 @@ class PrivacyPolicyScreen extends StatelessWidget {
             ),
             _section(
               'Contact Us',
-              'If you have any questions about this privacy policy, please contact us at privacy@zerofoodwaste.com',
+              'If you have any questions about this privacy policy, please contact us at privacy@Care Connect.com',
             ),
             SizedBox(height: 32),
             Center(

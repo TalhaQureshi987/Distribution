@@ -1,18 +1,23 @@
-const { createClient } = require('redis');
-const dotenv = require('dotenv');
-dotenv.config();
+const Redis = require('ioredis');
+const config = require('./environment');
 
-const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-const client = createClient({ url: redisUrl });
-
-client.on('error', (err) => {
-    console.log("Redis Error", err);
+// Create Redis client with configuration
+const redisClient = new Redis(config.redisUrl, {
+  retryDelayOnFailover: 100,
+  enableReadyCheck: false,
+  maxRetriesPerRequest: null,
+  lazyConnect: true
 });
 
-async function connectRedis() {
-    if (!client.isOpen) { // latest redis uses isOpen
-        await client.connect();
-    }
-}
+// Connection function for compatibility
+const connectRedis = async () => {
+  if (redisClient.status !== 'ready') {
+    await redisClient.connect();
+  }
+};
 
-module.exports = { client, connectRedis };
+// Export both client and connect function
+module.exports = {
+  client: redisClient,
+  connectRedis
+};

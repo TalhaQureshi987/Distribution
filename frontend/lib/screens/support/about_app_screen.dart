@@ -20,7 +20,7 @@ class AboutAppScreen extends StatelessWidget {
                   ),
                   SizedBox(height: 16),
                   Text(
-                    'Zero Food Waste',
+                    'Care Connect',
                     style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                   ),
                   Text(
@@ -37,7 +37,7 @@ class AboutAppScreen extends StatelessWidget {
             ),
             SizedBox(height: 8),
             Text(
-              'Zero Food Waste is a community-driven platform that connects food donors with those in need, helping reduce food waste and hunger in our communities.',
+              'Care Connect is a community-driven platform that connects food donors with those in need, helping reduce food waste and hunger in our communities.',
               style: TextStyle(fontSize: 16),
             ),
             SizedBox(height: 24),
@@ -72,7 +72,7 @@ class AboutAppScreen extends StatelessWidget {
             SizedBox(height: 32),
             Center(
               child: Text(
-                '© 2024 Zero Food Waste. All rights reserved.',
+                '© 2024 Care Connect. All rights reserved.',
                 style: TextStyle(color: Colors.grey[600], fontSize: 12),
               ),
             ),

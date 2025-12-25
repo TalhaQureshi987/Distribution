@@ -21,17 +21,15 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       final result = await NotificationService.getUserNotifications();
       setState(() {
         notifications =
-            (result['notifications'] as List)
+            result
                 .map(
                   (notification) => {
                     'id': notification['_id'],
                     'title': notification['title'],
                     'message': notification['message'],
-                    'time': _formatTime(
-                      DateTime.parse(notification['createdAt']),
-                    ),
                     'type': notification['type'],
-                    'read': notification['isRead'] ?? false,
+                    'read': notification['read'] ?? false,
+                    'createdAt': notification['createdAt'],
                   },
                 )
                 .toList();
@@ -41,15 +39,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       setState(() {
         isLoading = false;
       });
-      // Show error message
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load notifications: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading notifications: $e')),
+      );
     }
   }
 
@@ -138,7 +130,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           Text(notification['message']),
                           SizedBox(height: 4),
                           Text(
-                            notification['time'],
+                            _formatTime(
+                              DateTime.parse(notification['createdAt']),
+                            ),
                             style: TextStyle(
                               color: Colors.grey[600],
                               fontSize: 12,
@@ -178,11 +172,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Color _getNotificationColor(String type) {
     switch (type) {
       case 'donation':
-        return Colors.green;
+        return Color(0xFF8B4513); // Brown theme color
       case 'request':
-        return Colors.blue;
+        return Color(0xFFD2691E); // Brown-orange theme color
       case 'message':
-        return Colors.orange;
+        return Color(0xFFCD853F); // Peru brown for messages
       default:
         return Colors.grey;
     }

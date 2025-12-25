@@ -6,44 +6,119 @@ const {
   getAvailableRequests,
   getRequestById,
   getUserRequests,
-  fulfillRequest,
-  updateRequestStatus,
-  cancelRequest,
-  deleteRequest,
-  getRequestsByStatus,
-  getUrgentRequests,
+  getRequestsByDeliveryOption,
+  getRequestDashboardStats,
+  getAllRequestsForAdmin,
+  approveRequestByAdmin,
+  rejectRequestByAdmin,
+  getServiceCost,
 } = require("../controllers/requestController");
 
-const { protect } = require("../middleware/authMiddleware");
+const { protect, admin } = require("../middleware/authMiddleware");
+const {
+  requireRequester,
+  requireDonor,
+  requireApprovedStatus,
+  requireApprovedRole,
+} = require("../middleware/roleMiddleware");
+const { requireVerification } = require("../middleware/verificationMiddleware");
 
-// Create request
-router.post("/", protect, createRequest);
+// Create request (REQUESTERS ONLY - requires email verification and payment)
+router.post("/", protect, requireRequester, createRequest);
 
-// List requests
+// Public request routes
 router.get("/", protect, getAvailableRequests);
+router.get(
+  "/my-requests",
+  protect,
+  requireRequester,
+  requireApprovedStatus,
+  getUserRequests
+);
+router.get(
+  "/dashboard-stats",
+  protect,
+  requireRequester,
+  requireApprovedStatus,
+  getRequestDashboardStats
+);
+router.get(
+  "/delivery-option/:deliveryOption",
+  protect,
+  getRequestsByDeliveryOption
+);
+router.get("/service-cost", protect, getServiceCost);
 
-// My requests
-router.get("/my-requests", protect, getUserRequests);
+// Volunteer and delivery assignment routes for requests
+router.get("/volunteer-deliveries", protect, (req, res, next) => {
+  req.params.deliveryOption = "Volunteer Delivery";
+  getRequestsByDeliveryOption(req, res, next);
+});
 
-// Urgent requests
-router.get("/urgent", protect, getUrgentRequests);
+router.get("/paid-deliveries", protect, (req, res, next) => {
+  req.params.deliveryOption = "Paid Delivery";
+  getRequestsByDeliveryOption(req, res, next);
+});
 
-// Requests by status
-router.get("/status/:status", protect, getRequestsByStatus);
+// Debug route to check database state
+router.get("/debug/delivery-options", protect, async (req, res) => {
+  try {
+    const Request = require("../models/Request");
 
-// Single request (must be last to avoid conflicts)
-router.get("/:id", protect, getRequestById);
+    // Get all unique delivery options from metadata
+    const allRequests = await Request.find(
+      {},
+      { "metadata.deliveryOption": 1 }
+    );
+    const deliveryOptions = [
+      ...new Set(
+        allRequests.map((r) => r.metadata?.deliveryOption).filter(Boolean)
+      ),
+    ];
 
-// Fulfill
-router.patch("/:id/fulfill", protect, fulfillRequest);
+    // Get count of requests by delivery option
+    const counts = {};
+    for (const option of deliveryOptions) {
+      counts[option] = await Request.countDocuments({
+        "metadata.deliveryOption": option,
+      });
+    }
 
-// Update status
-router.patch("/:id/status", protect, updateRequestStatus);
+    // Get count of verified requests by delivery option
+    const verifiedCounts = {};
+    for (const option of deliveryOptions) {
+      verifiedCounts[option] = await Request.countDocuments({
+        "metadata.deliveryOption": option,
+        verificationStatus: "verified",
+      });
+    }
 
-// Cancel
-router.patch("/:id/cancel", protect, cancelRequest);
+    // Get total counts
+    const totalRequests = await Request.countDocuments();
+    const verifiedRequests = await Request.countDocuments({
+      verificationStatus: "verified",
+    });
 
-// Delete
-router.delete("/:id", protect, deleteRequest);
+    res.json({
+      success: true,
+      deliveryOptions,
+      counts,
+      verifiedCounts,
+      totalRequests,
+      verifiedRequests,
+      message: "Database state for request delivery options",
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Single request (approved users can view)
+router.get("/:id", protect, requireApprovedStatus, getRequestById);
+
+// Admin routes for request verification
+router.get("/admin/all", protect, admin, getAllRequestsForAdmin);
+router.patch("/admin/:id/approve", protect, admin, approveRequestByAdmin);
+router.patch("/admin/:id/reject", protect, admin, rejectRequestByAdmin);
 
 module.exports = router;

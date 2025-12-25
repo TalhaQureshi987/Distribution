@@ -1,15 +1,66 @@
 const Request = require("../models/Request");
 const User = require("../models/User");
-const { validateRequest } = require("../validators/requestValidator");
+const { logger } = require("../utils/logger");
+const { logActivity } = require("../services/activityService");
+const DeliveryNotificationService = require("./notificationController");
+const {
+  sendRequestVerifiedEmail,
+  sendRequestRejectedEmail,
+  sendRequestSubmittedEmail,
+} = require("../services/emailService");
+// Import centralized utilities
+const {
+  calculateDeliveryFee,
+  calculateDistance,
+  getCenterCoordinates,
+} = require("../utils/deliveryUtils");
 
-// @desc    Create a new food request
-// @route   POST /api/requests
-// @access  Private
+const OFFICE_ADDRESS = process.env.OFFICE_ADDRESS || "Central Karachi";
+// Get center coordinates from utils
+const center = getCenterCoordinates();
+const OFFICE_LAT = parseFloat(
+  process.env.OFFICE_LAT || center.latitude.toString()
+);
+const OFFICE_LNG = parseFloat(
+  process.env.OFFICE_LNG || center.longitude.toString()
+);
+
+// Valid delivery options - consistent with frontend and donation controller
+const validDeliveryOptions = [
+  "Self delivery",
+  "Volunteer Delivery",
+  "Paid Delivery",
+];
+
+const isDelivery = (opt) =>
+  ["Volunteer Delivery", "Paid Delivery", "Paid Delivery (Earn)"].includes(opt);
+
+const num = (v) => (v === undefined || v === null ? undefined : parseFloat(v));
+const parseDate = (v) => (v ? new Date(v) : undefined);
+
+// calculateDistance function now imported from centralized utils
+
 const createRequest = async (req, res) => {
   try {
-    const { error } = validateRequest(req.body);
-    if (error) {
-      return res.status(400).json({ message: error.details[0].message });
+    console.log("📝 CREATE REQUEST - Starting");
+    console.log("📝 Request body:", JSON.stringify(req.body, null, 2));
+    console.log("📝 User ID:", req.user?.id);
+
+    if (!req.body || Object.keys(req.body).length === 0) {
+      return res.status(400).json({
+        message: "Request body is empty. Please provide request details.",
+        required: [
+          "title",
+          "description",
+          "foodType",
+          "quantity",
+          "quantityUnit",
+          "neededBy",
+          "pickupAddress",
+          "latitude",
+          "longitude",
+        ],
+      });
     }
 
     const {
@@ -25,52 +76,198 @@ const createRequest = async (req, res) => {
       notes,
       isUrgent,
       images,
+      deliveryOption = "Self delivery", // 👈 default is self
+      // ✅ NEW: Payment and delivery fields
+      paymentAmount,
+      requestFee,
+      paymentStatus,
+      stripePaymentIntentId,
+      distance,
+      // Category-specific fields
+      medicineName,
+      prescriptionRequired,
+      foodName,
+      foodCategory,
+      clothesGenderAge,
+      clothesCondition,
+      otherDescription,
     } = req.body;
 
-    // Get requester information from authenticated user
+    if (!description?.trim())
+      return res.status(400).json({ message: "Description is required" });
+    if (!title?.trim())
+      return res.status(400).json({ message: "Title is required" });
+    if (!foodType?.trim())
+      return res.status(400).json({ message: "Food type is required" });
+    if (!pickupAddress?.trim())
+      return res.status(400).json({ message: "Pickup address is required" });
+
+    console.log("📝 Finding requester user...");
     const requester = await User.findById(req.user.id);
-    if (!requester) {
-      return res.status(404).json({ message: "User not found" });
+    if (!requester) return res.status(404).json({ message: "User not found" });
+    console.log("✅ Requester found:", requester.name, requester.email);
+
+    const q = quantity ? parseInt(quantity, 10) || 1 : 1;
+    const isUrgentBool = isUrgent === "true" || isUrgent === true;
+
+    // Handle neededBy date
+    let needed;
+    if (neededBy) {
+      needed = new Date(neededBy);
+      if (Number.isNaN(needed.getTime())) {
+        return res.status(400).json({ message: "Invalid neededBy date" });
+      }
+    } else {
+      needed = new Date(Date.now() + 7 * 24 * 3600 * 1000);
     }
 
+    // Handle location
+    let finalAddress = pickupAddress;
+    let finalLat = num(latitude) || OFFICE_LAT;
+    let finalLng = num(longitude) || OFFICE_LNG;
+
+    if (isNaN(finalLat) || isNaN(finalLng)) {
+      console.log("⚠️ Invalid coordinates, using office defaults");
+      finalLat = OFFICE_LAT;
+      finalLng = OFFICE_LNG;
+      finalAddress = finalAddress || OFFICE_ADDRESS;
+    }
+
+    // ✅ Distance & Fee calculation using payment middleware
+    let distanceCalc = null;
+    let deliveryFee = null;
+    let serviceFee = 100; // Fixed service fee for all requests
+    let totalAmount = serviceFee; // Start with service fee
+
+    if (deliveryOption !== "Self delivery") {
+      distanceCalc = calculateDistance(
+        finalLat,
+        finalLng,
+        OFFICE_LAT,
+        OFFICE_LNG
+      );
+
+      if (deliveryOption === "Paid Delivery") {
+        deliveryFee = calculateDeliveryFee(distanceCalc);
+        totalAmount = serviceFee + deliveryFee; // Service fee + delivery fee
+      } else if (deliveryOption === "Volunteer Delivery") {
+        deliveryFee = 0; // Free volunteer delivery
+        totalAmount = serviceFee; // Only service fee
+      }
+    } else {
+      // Self delivery - only service fee
+      totalAmount = serviceFee;
+    }
+
+    console.log(
+      `💰 Payment breakdown: Service Fee: ${serviceFee} PKR, Delivery Fee: ${
+        deliveryFee || 0
+      } PKR, Total: ${totalAmount} PKR`
+    );
+
+    console.log("📝 Creating request object...");
     const request = new Request({
-      requesterId: req.user.id,
-      requesterName: requester.name,
+      userId: requester._id,
+      requestType: "food_request",
       title,
       description,
-      foodType,
-      quantity,
-      quantityUnit,
-      neededBy,
-      pickupAddress,
-      latitude,
-      longitude,
-      notes,
-      isUrgent: isUrgent || false,
-      images: images || [],
-      status: "pending",
+      priority: isUrgentBool ? "urgent" : "medium",
+      status: "pending_verification",
+      verificationStatus: "pending",
+      metadata: {
+        foodType: foodType || "Other",
+        foodCategory:
+          foodType === "Food"
+            ? req.body.foodCategory || "Other Food Items"
+            : undefined,
+        foodName:
+          foodType === "Food" ? req.body.foodName || title || "" : undefined,
+        quantity: q,
+        quantityUnit: quantityUnit || "items",
+        neededBy: needed,
+        pickupAddress: finalAddress,
+        latitude: finalLat,
+        longitude: finalLng,
+        notes: notes || "",
+        isUrgent: isUrgentBool,
+        images: Array.isArray(images) ? images : [],
+        deliveryOption, // 👈 store exactly what user selected
+        distance: distanceCalc,
+        serviceFee: serviceFee, // ✅ Save service fee (100 PKR)
+        deliveryFee: deliveryFee, // ✅ Save delivery fee if paid
+        totalAmount: totalAmount, // ✅ Save total amount
+        paymentStatus,
+        stripePaymentIntentId,
+        medicineName,
+        prescriptionRequired,
+        clothesGenderAge,
+        clothesCondition,
+        otherDescription,
+      },
+      contactInfo: {
+        email: requester.email,
+        phone: requester.phone || "",
+        address: finalAddress,
+      },
     });
 
+    console.log("📝 Saving request to database...");
     const savedRequest = await request.save();
+    console.log("✅ Request saved successfully:", savedRequest._id);
 
-    res.status(201).json({
+    // Activity logging
+    try {
+      const Activity = require("../models/Activity");
+      const activity = new Activity({
+        userId: requester._id,
+        type: "request_created",
+        description: `Created request: ${savedRequest.title}`,
+        metadata: {
+          requestId: savedRequest._id,
+          foodType: savedRequest.metadata.foodType,
+          quantity: savedRequest.metadata.quantity,
+          distance: savedRequest.metadata.distance,
+          serviceFee: savedRequest.metadata.serviceFee,
+          deliveryFee: savedRequest.metadata.deliveryFee,
+          totalAmount: savedRequest.metadata.totalAmount,
+        },
+      });
+      await activity.save();
+    } catch (activityError) {
+      console.error("❌ Failed to log activity:", activityError);
+    }
+
+    // Send request submitted email
+    try {
+      await sendRequestSubmittedEmail(requester.email, {
+        requesterName: requester.name,
+        requestTitle: savedRequest.title,
+        requestId: savedRequest._id,
+      });
+    } catch (emailError) {
+      console.error("Failed to send request submission email:", emailError);
+    }
+
+    console.log("✅ CREATE REQUEST - Completed successfully");
+    return res.status(201).json({
+      success: true,
       message: "Request created successfully",
       request: savedRequest,
     });
   } catch (error) {
-    console.error("Error creating request:", error);
-    res.status(500).json({ message: "Server error" });
+    console.error("💥 CREATE REQUEST ERROR:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Something went wrong!",
+      error: error.message,
+    });
   }
 };
 
-// @desc    Get all available requests with filters
-// @route   GET /api/requests
-// @access  Private
 const getAvailableRequests = async (req, res) => {
   try {
     const {
       foodType,
-      location,
       latitude,
       longitude,
       radius,
@@ -80,47 +277,51 @@ const getAvailableRequests = async (req, res) => {
       limit = 20,
     } = req.query;
 
-    // Build filter object
     const filter = {};
 
     if (foodType) filter.foodType = { $regex: foodType, $options: "i" };
     if (isUrgent !== undefined) filter.isUrgent = isUrgent === "true";
     if (status) filter.status = status;
 
-    // Location-based filtering
+    // Geo filtering (requires location field on docs)
     if (latitude && longitude && radius) {
       const lat = parseFloat(latitude);
       const lng = parseFloat(longitude);
-      const r = parseFloat(radius);
+      const rKm = parseFloat(radius);
 
-      filter.location = {
-        $near: {
-          $geometry: {
-            type: "Point",
-            coordinates: [lng, lat],
+      if (
+        Number.isFinite(lat) &&
+        Number.isFinite(lng) &&
+        Number.isFinite(rKm)
+      ) {
+        filter.location = {
+          $near: {
+            $geometry: { type: "Point", coordinates: [lng, lat] },
+            $maxDistance: rKm * 1000, // km -> m
           },
-          $maxDistance: r * 1000, // Convert km to meters
-        },
-      };
+        };
+      }
     }
 
-    const skip = (page - 1) * limit;
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const skip = (pageNum - 1) * limitNum;
 
     const requests = await Request.find(filter)
-      .sort({ createdAt: -1, isUrgent: -1 })
+      .sort({ isUrgent: -1, createdAt: -1 })
       .skip(skip)
-      .limit(parseInt(limit))
-      .populate("requesterId", "name email phone");
+      .limit(limitNum)
+      .populate("userId", "name email phone");
 
     const total = await Request.countDocuments(filter);
 
     res.json({
       requests,
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / limit),
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum),
         totalItems: total,
-        itemsPerPage: parseInt(limit),
+        itemsPerPage: limitNum,
       },
     });
   } catch (error) {
@@ -129,13 +330,10 @@ const getAvailableRequests = async (req, res) => {
   }
 };
 
-// @desc    Get request by ID
-// @route   GET /api/requests/:id
-// @access  Private
 const getRequestById = async (req, res) => {
   try {
     const request = await Request.findById(req.params.id).populate(
-      "requesterId",
+      "userId",
       "name email phone"
     );
 
@@ -150,12 +348,9 @@ const getRequestById = async (req, res) => {
   }
 };
 
-// @desc    Get user's requests
-// @route   GET /api/requests/my-requests
-// @access  Private
 const getUserRequests = async (req, res) => {
   try {
-    const requests = await Request.find({ requesterId: req.user.id }).sort({
+    const requests = await Request.find({ userId: req.user.id }).sort({
       createdAt: -1,
     });
 
@@ -166,201 +361,6 @@ const getUserRequests = async (req, res) => {
   }
 };
 
-// @desc    Fulfill a request
-// @route   PATCH /api/requests/:id/fulfill
-// @access  Private
-const fulfillRequest = async (req, res) => {
-  try {
-    const request = await Request.findById(req.params.id);
-
-    if (!request) {
-      return res.status(404).json({ message: "Request not found" });
-    }
-
-    if (request.status !== "pending" && request.status !== "approved") {
-      return res
-        .status(400)
-        .json({ message: "Request cannot be fulfilled with current status" });
-    }
-
-    if (request.requesterId.toString() === req.user.id) {
-      return res
-        .status(400)
-        .json({ message: "Cannot fulfill your own request" });
-    }
-
-    // Check if request has passed the needed date
-    if (new Date() > request.neededBy) {
-      request.status = "expired";
-      await request.save();
-      return res
-        .status(400)
-        .json({ message: "Request has passed the needed date" });
-    }
-
-    request.status = "fulfilled";
-    request.fulfilledBy = req.user.id;
-    request.fulfilledAt = new Date();
-    request.updatedAt = new Date();
-
-    const updatedRequest = await request.save();
-
-    res.json({
-      message: "Request fulfilled successfully",
-      request: updatedRequest,
-    });
-  } catch (error) {
-    console.error("Error fulfilling request:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
-// @desc    Update request status
-// @route   PATCH /api/requests/:id/status
-// @access  Private
-const updateRequestStatus = async (req, res) => {
-  try {
-    const { status, reason } = req.body;
-    const validStatuses = [
-      "pending",
-      "approved",
-      "fulfilled",
-      "cancelled",
-      "expired",
-    ];
-
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ message: "Invalid status" });
-    }
-
-    const request = await Request.findById(req.params.id);
-
-    if (!request) {
-      return res.status(404).json({ message: "Request not found" });
-    }
-
-    // Check if user is the requester or admin
-    if (
-      request.requesterId.toString() !== req.user.id &&
-      req.user.role !== "admin"
-    ) {
-      return res.status(403).json({ message: "Not authorized" });
-    }
-
-    request.status = status;
-    request.updatedAt = new Date();
-
-    // Add reason for status change
-    if (reason) {
-      request.reason = reason;
-    }
-
-    // Reset fulfillment if status changes to pending or approved
-    if (status === "pending" || status === "approved") {
-      request.fulfilledBy = undefined;
-      request.fulfilledAt = undefined;
-    }
-
-    const updatedRequest = await request.save();
-
-    res.json({
-      message: "Request status updated successfully",
-      request: updatedRequest,
-    });
-  } catch (error) {
-    console.error("Error updating request status:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
-// @desc    Cancel a request
-// @route   PATCH /api/requests/:id/cancel
-// @access  Private
-const cancelRequest = async (req, res) => {
-  try {
-    const { reason } = req.body;
-
-    if (!reason) {
-      return res
-        .status(400)
-        .json({ message: "Reason is required for cancellation" });
-    }
-
-    const request = await Request.findById(req.params.id);
-
-    if (!request) {
-      return res.status(404).json({ message: "Request not found" });
-    }
-
-    // Check if user is the requester or admin
-    if (
-      request.requesterId.toString() !== req.user.id &&
-      req.user.role !== "admin"
-    ) {
-      return res.status(403).json({ message: "Not authorized" });
-    }
-
-    // Check if request can be cancelled
-    if (request.status === "fulfilled" || request.status === "cancelled") {
-      return res
-        .status(400)
-        .json({ message: "Request cannot be cancelled with current status" });
-    }
-
-    request.status = "cancelled";
-    request.reason = reason;
-    request.updatedAt = new Date();
-
-    const updatedRequest = await request.save();
-
-    res.json({
-      message: "Request cancelled successfully",
-      request: updatedRequest,
-    });
-  } catch (error) {
-    console.error("Error cancelling request:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
-// @desc    Delete request
-// @route   DELETE /api/requests/:id
-// @access  Private
-const deleteRequest = async (req, res) => {
-  try {
-    const request = await Request.findById(req.params.id);
-
-    if (!request) {
-      return res.status(404).json({ message: "Request not found" });
-    }
-
-    // Check if user is the requester or admin
-    if (
-      request.requesterId.toString() !== req.user.id &&
-      req.user.role !== "admin"
-    ) {
-      return res.status(403).json({ message: "Not authorized" });
-    }
-
-    // Check if request can be deleted
-    if (request.status === "fulfilled") {
-      return res
-        .status(400)
-        .json({ message: "Cannot delete fulfilled request" });
-    }
-
-    await Request.findByIdAndDelete(req.params.id);
-
-    res.json({ message: "Request deleted successfully" });
-  } catch (error) {
-    console.error("Error deleting request:", error);
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
-// @desc    Get requests by status
-// @route   GET /api/requests/status/:status
-// @access  Private
 const getRequestsByStatus = async (req, res) => {
   try {
     const { status } = req.params;
@@ -378,7 +378,7 @@ const getRequestsByStatus = async (req, res) => {
 
     const requests = await Request.find({ status })
       .sort({ createdAt: -1 })
-      .populate("requesterId", "name email phone");
+      .populate("userId", "name email phone");
 
     res.json({ requests });
   } catch (error) {
@@ -387,18 +387,15 @@ const getRequestsByStatus = async (req, res) => {
   }
 };
 
-// @desc    Get urgent requests
-// @route   GET /api/requests/urgent
-// @access  Private
 const getUrgentRequests = async (req, res) => {
   try {
     const requests = await Request.find({
-      isUrgent: true,
+      metadata: { isUrgent: true },
       status: { $in: ["pending", "approved"] },
-      neededBy: { $gt: new Date() },
+      "metadata.neededBy": { $gt: new Date() },
     })
-      .sort({ neededBy: 1, createdAt: -1 })
-      .populate("requesterId", "name email phone");
+      .sort({ "metadata.neededBy": 1, createdAt: -1 })
+      .populate("userId", "name email phone");
 
     res.json({ requests });
   } catch (error) {
@@ -407,15 +404,542 @@ const getUrgentRequests = async (req, res) => {
   }
 };
 
+const getUserRecentRequests = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const limit = parseInt(req.query.limit) || 10;
+
+    // Validate user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Get user's recent requests
+    const requests = await Request.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate("userId", "name email")
+      .populate("donor", "name email")
+      .select(
+        "title description requestType status urgencyLevel createdAt updatedAt"
+      );
+
+    console.log(
+      `📊 Admin fetched user requests: ${requests.length} for user ${userId}`
+    );
+
+    res.json({
+      success: true,
+      requests,
+      count: requests.length,
+      userId,
+    });
+  } catch (error) {
+    console.error("Get user recent requests error:", error.message);
+    res.status(500).json({ message: "Server error fetching user requests" });
+  }
+};
+
+const getRequestsByDeliveryOption = async (req, res) => {
+  try {
+    const { deliveryOption } = req.params;
+
+    console.log("🔍 Getting requests by delivery option:", deliveryOption);
+
+    // Handle special routes with consistent values
+    let filterOption = deliveryOption;
+    if (req.path.includes("/volunteer-deliveries")) {
+      filterOption = "Volunteer Delivery";
+    } else if (req.path.includes("/paid-deliveries")) {
+      filterOption = "Paid Delivery";
+    } else if (req.path.includes("/self-deliveries")) {
+      filterOption = "Self delivery"; // Consistent with createRequest
+    }
+
+    // Validate the filter option
+    if (!validDeliveryOptions.includes(filterOption)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid delivery option. Must be one of: ${validDeliveryOptions.join(
+          ", "
+        )}`,
+      });
+    }
+
+    const requests = await Request.find({
+      "metadata.deliveryOption": filterOption,
+      verificationStatus: "verified",
+      assignedTo: { $exists: false },
+    })
+      .sort({ createdAt: -1 })
+      .populate("userId", "name email phone");
+
+    console.log(
+      `✅ Found ${requests.length} requests with deliveryOption: "${filterOption}"`
+    );
+
+    res.json({
+      success: true,
+      requests,
+      filter: filterOption,
+      count: requests.length,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching requests by delivery option:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+// Get request statistics
+const getRequestStats = async (req, res) => {
+  try {
+    console.log("📊 Getting request statistics...");
+
+    // Get all requests for the user
+    const userRequests = await Request.find({ userId: req.user.id });
+
+    // Simple stats - only 4 key metrics
+    const totalRequests = userRequests.length;
+    const verifiedRequests = userRequests.filter(
+      (r) => r.verificationStatus === "verified"
+    ).length;
+    const pendingRequests = userRequests.filter(
+      (r) => r.verificationStatus === "pending"
+    ).length;
+    const completedRequests = userRequests.filter(
+      (r) => r.status === "completed" || r.status === "fulfilled"
+    ).length;
+
+    // Category breakdown for dashboard display
+    const foodRequests = userRequests.filter(
+      (r) =>
+        r.metadata &&
+        r.metadata.foodType &&
+        r.metadata.foodType.toLowerCase() === "food"
+    ).length;
+    const medicineRequests = userRequests.filter(
+      (r) =>
+        r.metadata &&
+        r.metadata.foodType &&
+        r.metadata.foodType.toLowerCase() === "medicine"
+    ).length;
+    const clothesRequests = userRequests.filter(
+      (r) =>
+        r.metadata &&
+        r.metadata.foodType &&
+        r.metadata.foodType.toLowerCase() === "clothes"
+    ).length;
+    const otherRequests = userRequests.filter(
+      (r) =>
+        r.metadata &&
+        r.metadata.foodType &&
+        r.metadata.foodType.toLowerCase() === "other"
+    ).length;
+
+    const stats = {
+      totalRequests,
+      verifiedRequests,
+      pendingRequests,
+      completedRequests,
+      foodRequests,
+      medicineRequests,
+      clothesRequests,
+      otherRequests,
+    };
+
+    console.log("📊 Request stats calculated:", stats);
+
+    res.json({
+      success: true,
+      stats,
+    });
+  } catch (error) {
+    console.error("❌ Error getting request stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get request statistics",
+      error: error.message,
+    });
+  }
+};
+
+// Get request dashboard statistics
+const getRequestDashboardStats = async (req, res) => {
+  try {
+    console.log("📊 Getting request dashboard statistics...");
+
+    // Get all requests for the user
+    const userRequests = await Request.find({ userId: req.user.id });
+
+    // Simple stats - only 4 key metrics (same as getRequestStats)
+    const totalRequests = userRequests.length;
+    const verifiedRequests = userRequests.filter(
+      (r) => r.verificationStatus === "verified"
+    ).length;
+    const pendingRequests = userRequests.filter(
+      (r) => r.verificationStatus === "pending"
+    ).length;
+    const completedRequests = userRequests.filter(
+      (r) => r.status === "completed" || r.status === "fulfilled"
+    ).length;
+
+    // Category breakdown for dashboard display
+    const foodRequests = userRequests.filter(
+      (r) =>
+        r.metadata &&
+        r.metadata.foodType &&
+        r.metadata.foodType.toLowerCase() === "food"
+    ).length;
+    const medicineRequests = userRequests.filter(
+      (r) =>
+        r.metadata &&
+        r.metadata.foodType &&
+        r.metadata.foodType.toLowerCase() === "medicine"
+    ).length;
+    const clothesRequests = userRequests.filter(
+      (r) =>
+        r.metadata &&
+        r.metadata.foodType &&
+        r.metadata.foodType.toLowerCase() === "clothes"
+    ).length;
+    const otherRequests = userRequests.filter(
+      (r) =>
+        r.metadata &&
+        r.metadata.foodType &&
+        r.metadata.foodType.toLowerCase() === "other"
+    ).length;
+
+    // Service cost calculation - 100 PKR per request
+    const SERVICE_COST_PER_REQUEST = 100;
+    const totalServiceCost = totalRequests * SERVICE_COST_PER_REQUEST;
+    const paidServiceCost = verifiedRequests * SERVICE_COST_PER_REQUEST;
+    const pendingServiceCost = pendingRequests * SERVICE_COST_PER_REQUEST;
+
+    // Recent activity
+    const recentActivity = userRequests.slice(0, 5).map((request) => ({
+      id: request._id,
+      title: request.title,
+      status: request.status,
+      verificationStatus: request.verificationStatus,
+      serviceCost: SERVICE_COST_PER_REQUEST,
+      createdAt: request.createdAt,
+      completedAt: request.status === "completed" ? request.updatedAt : null,
+      foodType: request.metadata?.foodType || "Other",
+      priority: request.priority,
+    }));
+
+    const stats = {
+      totalRequests,
+      verifiedRequests,
+      pendingRequests,
+      completedRequests,
+      foodRequests,
+      medicineRequests,
+      clothesRequests,
+      otherRequests,
+      // Service cost information
+      totalServiceCost,
+      paidServiceCost,
+      pendingServiceCost,
+      serviceCostPerRequest: SERVICE_COST_PER_REQUEST,
+      // Recent activity
+      recentActivity,
+      // Live update timestamp
+      lastUpdated: new Date().toISOString(),
+    };
+
+    console.log("📊 Request dashboard stats calculated:", stats);
+
+    res.json({
+      success: true,
+      stats,
+    });
+  } catch (error) {
+    console.error("❌ Error getting request dashboard stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get request dashboard statistics",
+      error: error.message,
+    });
+  }
+};
+
+const getAllRequestsForAdmin = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      status,
+      verificationStatus,
+      requestType,
+      deliveryOption,
+      search,
+    } = req.query;
+
+    // Build filter query
+    const filter = {};
+
+    if (status) filter.status = status;
+    if (verificationStatus) filter.verificationStatus = verificationStatus;
+    if (requestType)
+      filter.requestType = { $regex: requestType, $options: "i" };
+
+    // Filter by delivery option
+    if (deliveryOption) {
+      filter["metadata.deliveryOption"] = deliveryOption;
+    }
+
+    // Search functionality
+    if (search) {
+      filter.$or = [
+        { title: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+        { "userId.name": { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+    const totalRequests = await Request.countDocuments(filter);
+
+    const requests = await Request.find(filter)
+      .populate("userId", "name email phone address")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    res.json({
+      success: true,
+      requests,
+      pagination: {
+        current: parseInt(page),
+        total: Math.ceil(totalRequests / limit),
+        limit: parseInt(limit),
+        totalItems: totalRequests,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Error fetching requests for admin:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch requests",
+      error: error.message,
+    });
+  }
+};
+
+const approveRequestByAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body;
+    const adminId = req.user.id;
+
+    console.log(`🔍 Admin ${adminId} attempting to approve request ${id}`);
+    console.log(`📝 Approval notes: ${notes || "None"}`);
+
+    const request = await Request.findById(id).populate("userId", "name email");
+
+    if (!request) {
+      console.log(`❌ Request ${id} not found`);
+      return res.status(404).json({
+        success: false,
+        message: "Request not found",
+      });
+    }
+
+    console.log(`📋 Request found: ${request.title} by ${request.userId.name}`);
+    console.log(
+      `📋 Current status: ${request.status}, verification: ${request.verificationStatus}`
+    );
+
+    if (request.verificationStatus === "verified") {
+      console.log(`⚠️ Request ${id} is already approved`);
+      return res.status(400).json({
+        success: false,
+        message: "Request is already approved",
+      });
+    }
+
+    // Update request status
+    request.verificationStatus = "verified";
+    request.status = "approved";
+    request.verifiedBy = adminId;
+    request.verificationDate = new Date();
+    request.verificationNotes = notes || "";
+
+    console.log(`💾 Saving request with new status: verified/approved`);
+    await request.save();
+    console.log(`✅ Request ${id} saved successfully`);
+
+    // Send request approved email
+    try {
+      console.log(`📧 Sending approval email to ${request.userId.email}`);
+      await sendRequestVerifiedEmail(request.userId.email, {
+        requesterName: request.userId.name,
+        requestTitle: request.title,
+        verifiedAt: new Date(),
+      });
+      console.log(`✅ Approval email sent successfully`);
+    } catch (emailError) {
+      console.error("❌ Failed to send request approval email:", emailError);
+    }
+    // Notify delivery personnel and volunteers about new delivery opportunity
+    try {
+      if (
+        request.metadata?.deliveryOption &&
+        request.metadata.deliveryOption !== "Self delivery" &&
+        request.metadata.deliveryOption !== "Self delivery"
+      ) {
+        console.log(
+          "🚚 Notifying delivery personnel about approved request:",
+          request._id
+        );
+
+        // Notify volunteers for volunteer delivery
+        if (request.metadata.deliveryOption === "Volunteer Delivery") {
+          await DeliveryNotificationService.notifyVolunteersNewDelivery(
+            request
+          );
+        }
+
+        // Notify paid delivery personnel for paid delivery options
+        if (request.metadata.deliveryOption === "Paid Delivery") {
+          await DeliveryNotificationService.notifyDeliveryPersonnelNewDelivery(
+            request,
+            "request"
+          );
+        }
+      }
+    } catch (notificationError) {
+      console.error(
+        "Failed to send delivery notifications:",
+        notificationError
+      );
+    }
+
+    console.log(`✅ Request approved by admin: ${id}`);
+
+    res.json({
+      success: true,
+      message: "Request approved successfully",
+      request,
+    });
+  } catch (error) {
+    console.error("❌ Error approving request:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to approve request",
+      error: error.message,
+    });
+  }
+};
+
+const rejectRequestByAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user.id;
+
+    if (!reason || reason.trim().length < 5) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Rejection reason is required and must be at least 5 characters",
+      });
+    }
+
+    const request = await Request.findById(id).populate("userId", "name email");
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found",
+      });
+    }
+
+    if (request.verificationStatus === "rejected") {
+      return res.status(400).json({
+        success: false,
+        message: "Request is already rejected",
+      });
+    }
+
+    // Update request status
+    request.verificationStatus = "rejected";
+    request.status = "rejected";
+    request.verifiedBy = adminId;
+    request.verificationDate = new Date();
+    request.rejectionReason = reason.trim();
+
+    await request.save();
+
+    // Send request rejected email
+    try {
+      await sendRequestRejectedEmail(request.userId.email, {
+        requesterName: request.userId.name,
+        requestTitle: request.title,
+        rejectionReason: reason.trim(),
+      });
+    } catch (emailError) {
+      console.error("Failed to send request rejection email:", emailError);
+    }
+
+    console.log(`❌ Request rejected by admin: ${id} - Reason: ${reason}`);
+
+    res.json({
+      success: true,
+      message: "Request rejected successfully",
+      request,
+      reason: reason.trim(),
+    });
+  } catch (error) {
+    console.error("❌ Error rejecting request:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to reject request",
+      error: error.message,
+    });
+  }
+};
+
+// Get service cost configuration
+const getServiceCost = async (req, res) => {
+  try {
+    const SERVICE_COST_PER_REQUEST = 100; // PKR - Base fee for all requests
+
+    res.json({
+      success: true,
+      serviceCost: SERVICE_COST_PER_REQUEST,
+      currency: "PKR",
+      description: "One-time service cost per request",
+    });
+  } catch (error) {
+    console.error("Error getting service cost:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get service cost configuration",
+    });
+  }
+};
+
 module.exports = {
   createRequest,
   getAvailableRequests,
   getRequestById,
   getUserRequests,
-  fulfillRequest,
-  updateRequestStatus,
-  cancelRequest,
-  deleteRequest,
+
   getRequestsByStatus,
   getUrgentRequests,
+  getUserRecentRequests,
+  getRequestsByDeliveryOption,
+  getRequestStats,
+  getRequestDashboardStats,
+  getAllRequestsForAdmin,
+  approveRequestByAdmin,
+  rejectRequestByAdmin,
+  getServiceCost,
 };
